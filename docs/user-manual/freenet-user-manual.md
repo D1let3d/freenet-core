@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.0</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.123</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-08-25</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.1</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.133</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-05</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -35,8 +35,10 @@ of both the software and your own journey with it:
 - **Appendix E** contains the full revision history and the growth chart: which
   sections existed at each revision, and how coverage has expanded over time.
 
-Because this is revision 1.0, every section is technically new; badges will start
-appearing from revision 1.1 onward.
+This is revision 1.1 — the first revision to exercise this machinery. Badges in
+this edition mark what changed between Freenet v0.2.123 and v0.2.133 (plus a
+small number of purely editorial additions, identified as such in Appendix E's
+delta ledger).
 
 ### How this manual is organized — the reader's growth path
 
@@ -158,13 +160,24 @@ You can customize it with environment variables before the command:
 > supervisor, a node detects the update, exits… and stays stopped on the old
 > version. Install the service unless you know you want manual control.
 
-### 2.3 Windows
+### 2.3 Desktop apps: macOS and Windows <span class="badge badge-upd">UPDATED</span>
 
-Download the Windows installer from <https://freenet.org/>. On Windows the node
-runs under a **tray application**: you'll see a Freenet icon in the system tray
-with Start/Stop/Dashboard controls, and the tray wrapper performs the same
-supervision (auto-update, crash backoff, log capture) that systemd/launchd
-provide on Linux/macOS. On first launch it opens the dashboard in your browser.
+**macOS** now has a first-class app: download the DMG from
+<https://freenet.org/>, drag Freenet to Applications, and launch it. The app
+runs the node under a menu-bar wrapper (the same supervision — auto-update,
+crash backoff, log capture — that systemd provides on Linux) and, on first
+launch, automatically puts the `freenet` and `fdev` command-line tools on your
+`PATH` (symlinked into `/usr/local/bin`), so the terminal commands in this
+manual work without any shell configuration. *(App since v0.2.125; automatic
+CLI setup since v0.2.133.)* The §2.2 installer script also still works on
+macOS if you prefer a service without the app.
+
+**Windows:** download the Windows installer from <https://freenet.org/>. The
+node runs under a **tray application**: a Freenet icon in the system tray with
+Start/Stop/Dashboard controls, with the same supervision as above. On first
+launch it opens the dashboard in your browser. Since v0.2.131, Windows release
+binaries are **Authenticode-signed**, so SmartScreen warnings about an unknown
+publisher no longer apply to current releases.
 
 ### 2.4 Installing from source (advanced)
 
@@ -191,7 +204,37 @@ $ freenet --version
 This prints the version plus the exact git commit and build timestamp — you'll
 use it again in the self-check (Part IV).
 
-## 3. First Run and the Dashboard
+### 2.6 Docker <span class="badge badge-new">NEW</span>
+
+Since v0.2.133 there is an official container image,
+`ghcr.io/freenet/freenet-core`, published for every stable release
+(tags: exact version like `v0.2.133`, minor series `0.2`, and `latest`;
+built for `linux/amd64` and `linux/arm64`):
+
+```bash
+docker run -d --name freenet-node --network host \
+    -v freenet-data:/data --restart unless-stopped \
+    ghcr.io/freenet/freenet-core:latest
+```
+
+Then open `http://127.0.0.1:7509/` as usual. Three things to know:
+
+- **The container self-updates.** The image's entrypoint plays the supervisor
+  role (§2.2): it catches the node's exit-42 "update me" signal, applies the
+  update, and restarts. You do not need Watchtower, cron, or manual
+  `docker pull` to stay current — a container started once keeps itself
+  up to date.
+- The node runs from `/data/bin/freenet` on the **volume**, not from the image
+  layer, so applied updates survive `docker compose down && up`. On start, the
+  newer of (image binary, volume binary) wins — pulling a newer image never
+  rolls a self-updated node backwards.
+- `docker exec freenet-node freenet --version` reports the version actually
+  running, which may be ahead of what the image shipped with.
+
+A ready-made `docker-compose.yml` lives in `docker/freenet-node/` in the
+source repository, alongside the full container documentation.
+
+## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -200,7 +243,12 @@ Open the **dashboard**:
 
 The dashboard is served by your own node, on your own machine — it works even
 though it's "a website" because your node includes a small local web server.
-From here you can see node status and launch Freenet applications.
+From here you can see node status and launch Freenet applications. The
+dashboard has grown considerably since v0.2.123: it now shows a **measured GET
+success rate** (real fetch outcomes, not a synthetic health verdict), offers a
+**per-contract detail page** at `/contract/{key}` for anything your node hosts,
+follows your OS light/dark theme, and its tables filter and collapse for small
+screens.
 
 If you skipped the service, you can run a node in the foreground:
 
@@ -321,7 +369,7 @@ after an upgrade, after a reboot, or just periodically. The whole check takes
 about two minutes. Each step says what **good** looks like and where to go if
 the step fails.
 
-## 7. The Ten-Step Health Check
+## 7. The Ten-Step Health Check <span class="badge badge-upd">UPDATED</span>
 
 **Step 1 — What am I running?**
 
@@ -391,6 +439,11 @@ $ freenet update --check
 ✅ "Already up to date" (or it names a newer version — see Part VI to decide).
 Supervised installs update themselves; if this reports you are several versions
 behind *and* you installed the service, something is blocking updates → §11.3.
+
+> ⚠️ **This step matters more than it used to** (v0.2.133): the network now
+> enforces a minimum compatible version at the connection handshake. A node
+> that falls too far behind isn't just missing features — every peer refuses
+> its connections and it is cut off entirely. See §13.
 
 **Step 8 — Disk headroom.**
 
@@ -521,8 +574,12 @@ Also remember: **unsupervised** nodes (installed with `FREENET_NO_SERVICE=1`, or
 hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 **dev/dirty builds** never auto-update by design.
 
-### 11.4 No peers / can't join the network
+### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
 
+0. **Check your version first** (v0.2.133): the transport handshake enforces a
+   minimum compatible version, so a node that is too far out of date is
+   *refused by every peer* — it looks exactly like a connectivity problem but
+   is fixed by `freenet update`. Self-check step 7 rules this out in seconds.
 1. Give a fresh node a few minutes — joining requires a round-trip through a
    gateway.
 2. Check basic connectivity: can you reach the internet at all? Does your
@@ -539,11 +596,17 @@ The node raises its own file-descriptor limit at startup to the kernel hard
 limit automatically. If you still see `EMFILE`/fd errors on an unusual setup,
 raise the hard limit for the service (systemd: `LimitNOFILE=`), then restart.
 
-### 11.6 Disk usage growing
+### 11.6 Disk usage growing <span class="badge badge-upd">UPDATED</span>
 
 Hosted contract state is bounded (default 1 GiB; overall disk budget is
-additionally capped — §17) and evicted least-valuable-first, so unbounded growth
-is usually logs. Check the log directory shown by `freenet service status`.
+additionally capped — §17) and evicted least-valuable-first. Since v0.2.130,
+**logs are bounded too**: the node prunes its own log directory to a 512 MiB
+budget in the background, overridable with the `FREENET_LOG_DIR_MAX_BYTES`
+environment variable (shrink it on a quiet peer to hand back disk, or widen it
+while chasing an intermittent fault). The compiled-WASM cache is also now
+bounded by disk headroom, not just RAM (v0.2.126). If disk still grows
+unboundedly, check the data directory with `du` and file an issue — nothing is
+supposed to grow without a budget anymore.
 
 ## 12. Getting Help
 
@@ -559,7 +622,15 @@ is usually logs. Check the log directory shown by `freenet service status`.
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works
+## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
+
+> **Staying current is no longer optional** (v0.2.133). Freenet ships releases
+> frequently — sometimes several a day — and peers are expected to converge on
+> new releases within hours. The network enforces a `min-compatible-version`
+> floor **as a hard gate at the transport handshake**: once a node drops below
+> the floor, every peer refuses its connections and it is cut off. The
+> supervised auto-update pipeline below is what keeps that from ever happening
+> to you.
 
 Freenet releases frequently, and the update system is designed so a supervised
 node **keeps itself current with zero attention from you** — while protecting
@@ -638,7 +709,7 @@ same page.
 
 # Part VII — Advancing: Power Use
 
-## 16. Secrets: Protecting Your Keys and Private Data
+## 16. Secrets: Protecting Your Keys and Private Data <span class="badge badge-upd">UPDATED</span>
 
 Delegates keep your private data (identity keys, chat-room keys, credentials)
 **encrypted at rest** on your node. The design in one paragraph: every secret is
@@ -667,9 +738,17 @@ can trigger an OS consent prompt: opt in with `provision`), `systemd`
 always encrypted (passphrase-derived key), so it is safe to carry on a USB
 stick — but treat it like the keys it contains.
 
+**Make backups a habit, not just a migration step.** Your delegate keys are the
+one thing on your node that cannot be re-fetched from the network — if the disk
+dies and there is no bundle, identities and room keys are gone permanently.
+Run `secrets export` after creating any identity you care about and after any
+significant new secret, and store the bundle (plus its passphrase, separately)
+somewhere that doesn't share fate with the machine. Everything else — hosted
+contract state, caches, the binary — is replaceable; the secrets are not.
+
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning
+## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
@@ -687,11 +766,19 @@ Other useful dials:
 - `--max-blocking-threads` — WASM execution parallelism (default 2×CPU cores,
   clamped 4–32).
 
+Since v0.2.126–0.2.127 the memory side is smarter than a fixed ceiling: the
+node bounds overall peer memory (~2 GiB cap), sizes hosting eviction pressure
+from **live memory measurements** rather than a hardcoded per-contract
+overhead estimate, and bounds the compiled-WASM cache by actual disk headroom
+as well as RAM. In practice this means a node on a small VPS behaves itself
+without hand-tuning, and eviction responds to real pressure instead of
+worst-case guesses.
+
 The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer
+## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -708,6 +795,7 @@ cargo install --path crates/fdev     # or: cargo install fdev
 | `fdev query` | Show your node's open peer connections. |
 | `fdev diagnostics` | Detailed node state: network, subscriptions, metrics. |
 | `fdev inspect` | Compute a contract's ID without publishing. |
+| `fdev verify-merge` | Check that a contract's merge obeys the laws the network requires (order-independence, associativity, idempotence) — the *same* verifier the network runs. A contract that fails here cannot converge on the network. Formerly named `conformance`. *(New in v0.2.129–0.2.133.)* |
 | `fdev website init/publish/update` | Keypair-based publishing of static websites on Freenet. |
 | `fdev commands get/subscribe/update` | Raw contract operations against a node's WebSocket API. |
 
@@ -759,7 +847,7 @@ service but keep the binary (e.g. switching to hand-run mode), use
 | `freenet uninstall [--purge | --keep-data] [--system]` | Remove Freenet. |
 | `fdev …` | Developer tool (§18). |
 
-## Appendix B — Default Ports and File Locations
+## Appendix B — Default Ports and File Locations <span class="badge badge-upd">UPDATED</span>
 
 **Ports**
 
@@ -776,7 +864,9 @@ service but keep the binary (e.g. switching to hand-run mode), use
 | macOS | `~/Library/Application Support/The-Freenet-Project-Inc.Freenet/` | same tree |
 | Windows | `%APPDATA%\The Freenet Project Inc\Freenet\config\` | `%APPDATA%\The Freenet Project Inc\Freenet\data\` |
 
-Binary (installer default): `~/.local/bin/freenet` on Linux/macOS.
+Binary (installer default): `~/.local/bin/freenet` on Linux/macOS. The macOS
+app symlinks the CLI tools into `/usr/local/bin`. Docker keeps everything on
+the `/data` volume (binary at `/data/bin/freenet`).
 
 ## Appendix C — Exit Codes
 
@@ -810,11 +900,30 @@ the *current* revision are additionally badged inline throughout the text.
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
+| **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
+
+**Revision 1.1 delta ledger** (every badge in this edition traces to a row
+here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §2.3 Desktop apps | UPDATED | macOS DMG app with automatic CLI `PATH` setup; Windows binaries Authenticode-signed | v0.2.125/0.2.133; v0.2.131 |
+| §2.6 Docker | NEW | Official self-updating container image `ghcr.io/freenet/freenet-core` | v0.2.133 |
+| §3 Dashboard | UPDATED | Measured GET success rate, `/contract/{key}` detail pages, OS theme, filterable tables | v0.2.129–0.2.130 |
+| §7 Health check | UPDATED | Step 7 warning: compatibility floor makes staying current mandatory | v0.2.133 |
+| §11.4 No peers | UPDATED | New first cause: node below the network's minimum compatible version | v0.2.133 |
+| §11.6 Disk usage | UPDATED | Logs auto-pruned to 512 MiB, `FREENET_LOG_DIR_MAX_BYTES` override; WASM cache disk-bounded | v0.2.130; v0.2.126 |
+| §13 Auto-update | UPDATED | `min-compatible-version` enforced as a hard gate at the transport handshake | v0.2.133 |
+| §16 Secrets | UPDATED | Backup-as-a-habit guidance (secrets are the only unrecoverable data) | editorial |
+| §17 Tuning | UPDATED | Live-memory-aware hosting budgets, ~2 GiB peer memory cap, disk-headroom-bounded WASM cache | v0.2.126–0.2.127 |
+| §18 Developer | UPDATED | `fdev verify-merge` (merge-law verifier, formerly `conformance`) | v0.2.129–0.2.133 |
+| Appendix B | UPDATED | macOS `/usr/local/bin` symlinks; Docker `/data` volume paths | v0.2.133 |
 
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:100%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:86%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:100%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -824,7 +933,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.0 · covers Freenet v0.2.123 ·
+<p class="footer-note">Freenet User Manual rev 1.1 · covers Freenet v0.2.133 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
