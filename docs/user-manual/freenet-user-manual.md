@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.1</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.133</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-05</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.2</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.134</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-07</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -35,10 +35,12 @@ of both the software and your own journey with it:
 - **Appendix E** contains the full revision history and the growth chart: which
   sections existed at each revision, and how coverage has expanded over time.
 
-This is revision 1.1 — the first revision to exercise this machinery. Badges in
-this edition mark what changed between Freenet v0.2.123 and v0.2.133 (plus a
-small number of purely editorial additions, identified as such in Appendix E's
-delta ledger).
+This is revision 1.2. Badges in this edition mark what changed between Freenet
+v0.2.133 and v0.2.134; the previous revision's badges have been retired, and
+every badge here traces to a row in Appendix E's delta ledger, which names the
+release that drove it (or marks it editorial). Appendix E also keeps the
+earlier revisions' ledgers, so you can see what each edition changed even
+after its badges come down.
 
 ### How this manual is organized — the reader's growth path
 
@@ -50,7 +52,7 @@ climb as you advance:
 | 🟢 **Newcomer** | Understand Freenet and get it running | Parts I–II |
 | 🔵 **Everyday user** | Use apps, keep the node healthy | Parts II–IV |
 | 🟠 **Operator** | Configure, diagnose, fix, and upgrade | Parts III–VI |
-| 🔴 **Power user / developer** | Tune resources, manage secrets, build apps | Part VII |
+| 🔴 **Power user / developer** | Tune resources, manage secrets, monitor, build apps | Part VII |
 
 ### Conventions
 
@@ -107,11 +109,13 @@ central index.
 - It does **not** require you to be a developer. Running a node and using apps
   needs no programming at all.
 
-### 1.3 Where to learn more
+### 1.3 Where to learn more <span class="badge badge-upd">UPDATED</span>
 
 - Website: <https://freenet.org/>
 - Whitepaper (architecture deep-dive): <https://freenet.org/whitepaper/>
-- Community chat (Matrix): `#freenet:matrix.org`
+- Community chat (Matrix): `#freenet-locutus:matrix.org` — this is the room the
+  developers actually use. Older links point at `#freenet:matrix.org`, which is
+  not the project's room; if you joined that one, switch.
 - Source code: <https://github.com/freenet/freenet-core>
 
 <div class="page-break"></div>
@@ -160,7 +164,7 @@ You can customize it with environment variables before the command:
 > supervisor, a node detects the update, exits… and stays stopped on the old
 > version. Install the service unless you know you want manual control.
 
-### 2.3 Desktop apps: macOS and Windows <span class="badge badge-upd">UPDATED</span>
+### 2.3 Desktop apps: macOS and Windows
 
 **macOS** now has a first-class app: download the DMG from
 <https://freenet.org/>, drag Freenet to Applications, and launch it. The app
@@ -204,7 +208,7 @@ $ freenet --version
 This prints the version plus the exact git commit and build timestamp — you'll
 use it again in the self-check (Part IV).
 
-### 2.6 Docker <span class="badge badge-new">NEW</span>
+### 2.6 Docker
 
 Since v0.2.133 there is an official container image,
 `ghcr.io/freenet/freenet-core`, published for every stable release
@@ -234,7 +238,7 @@ Then open `http://127.0.0.1:7509/` as usual. Three things to know:
 A ready-made `docker-compose.yml` lives in `docker/freenet-node/` in the
 source repository, alongside the full container documentation.
 
-## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
+## 3. First Run and the Dashboard
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -264,7 +268,7 @@ The first startup fetches the current **gateway list** from
 joins the network. Within a short time the node acquires peer connections of its
 own and no longer depends on the gateway.
 
-## 4. Using Freenet Applications
+## 4. Using Freenet Applications <span class="badge badge-upd">UPDATED</span>
 
 Freenet apps are ordinary web apps loaded through your node. The flagship
 application today is **River** (<https://freenet.org/>) — decentralized group
@@ -280,6 +284,23 @@ General pattern for any Freenet app:
 
 Because apps run against *your* node, they keep working as long as your node
 does — there is no "server down" failure mode, only your own machine.
+
+**What an app tells you when something goes wrong (v0.2.134).** Three
+long-standing cases where the node reported the wrong thing to the app were
+fixed in this release. They need no action from you; they matter because an app
+that looked broken may simply have been mis-reported:
+
+- A large upload sent in chunks (a "streaming PUT") could be reported as failed
+  when it had in fact been stored — the internal watchdog outlived the success
+  reply. Such uploads now report success.
+- A contract already stored on your node could be reported as unavailable when
+  an unrelated network fetch failed transiently. Local state is no longer
+  suppressed by a passing network error.
+- Delegate failures (the programs that hold your private keys and data) are now
+  propagated to the app instead of being swallowed, and delegates that subscribe
+  to a contract are notified when its state is first installed rather than only
+  on later changes. An app that seemed to hang on first use should now either
+  work or tell you why.
 
 <div class="page-break"></div>
 
@@ -324,7 +345,7 @@ Override with `--config-dir`, `--data-dir`, `--log-dir` flags or the
 `CONFIG_DIR`, `DATA_DIR`, `LOG_DIR` environment variables. See Appendix B for
 macOS/Windows paths.
 
-### 6.2 Options you're most likely to touch
+### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -336,6 +357,17 @@ Every option can be given as a CLI flag or an environment variable:
 | `--log-level` (`LOG_LEVEL`) | `info` | `error`, `warn`, `info`, `debug`, `trace`. |
 | `--max-hosting-storage` | 1 GiB | Budget for hosted contract state; least-valuable contracts are evicted beyond this (§17). |
 | `--max-blocking-threads` | 2×CPU (4–32) | Worker threads for WASM execution. |
+| `--telemetry-enabled` (`FREENET_TELEMETRY_ENABLED`) | on during alpha | Sends operation timing and network topology to the project's dashboard. Contract content is never included. |
+| `--telemetry-endpoint` (`FREENET_TELEMETRY_ENDPOINT`) | `http://telemetry.freenet.org:4318` | Where that telemetry goes (see the note below). |
+| `--otel-telemetry-enabled` (`FREENET_OTEL_TELEMETRY_ENABLED`) | `false` | Export **your own** node's metrics to **your own** OpenTelemetry collector (§19). Entirely separate from `--telemetry-enabled`. |
+
+> **The project telemetry endpoint moved in v0.2.134**, from
+> `nova.locut.us:4318` to `telemetry.freenet.org:4318` — a role-based name, so
+> the address survives future host moves. You do not need to do anything: the
+> node stores the resolved endpoint in `config.toml`, and on the first start
+> after upgrading it recognizes the old default and re-derives the new one. An
+> endpoint you set yourself, by flag, environment variable, or by hand in the
+> file, is left alone.
 
 ### 6.3 Ports and firewalls
 
@@ -345,7 +377,7 @@ Every option can be given as a CLI flag or an environment variable:
   most home users need no router configuration. Opening/forwarding 31337/UDP can
   improve connectivity but is not required unless you run a gateway.
 
-### 6.4 Running a gateway (advanced) {#gateway}
+### 6.4 Running a gateway (advanced) {#gateway} <span class="badge badge-upd">UPDATED</span>
 
 A gateway is a node with a stable public address that helps new peers join. To
 run one you need a public IP and an open UDP port, and you start the node with:
@@ -360,6 +392,16 @@ gateways. Operating a public gateway is a service to the network; if you're
 interested, coordinate with the project through Matrix so your gateway can be
 listed in the official index.
 
+**Gateways are named by role now (v0.2.134).** Documentation, configuration
+examples, and published keys use `gw1.freenet.org`, `gw2.freenet.org`, … rather
+than the machine names (`vega.locut.us`, `nova.locut.us`) used before, so a
+gateway can move hosts without every example going stale. Public keys follow
+the same scheme (`https://freenet.org/keys/public.gw2.pem`). This is a naming
+change only: your node still discovers gateways automatically from
+`https://freenet.org/keys/gateways.toml`, and nothing in your config needs
+editing. Where you see an old host name in a third-party guide, expect the
+role name instead.
+
 <div class="page-break"></div>
 
 # Part IV — The Operational Self-Check
@@ -369,7 +411,7 @@ after an upgrade, after a reboot, or just periodically. The whole check takes
 about two minutes. Each step says what **good** looks like and where to go if
 the step fails.
 
-## 7. The Ten-Step Health Check <span class="badge badge-upd">UPDATED</span>
+## 7. The Ten-Step Health Check
 
 **Step 1 — What am I running?**
 
@@ -496,7 +538,7 @@ The self-check is designed so that **every failing step points at a fix**:
 - Anything you can't classify → generate a diagnostic report (§10) and ask for
   help (§12).
 
-## 10. Diagnostic Reports
+## 10. Diagnostic Reports <span class="badge badge-upd">UPDATED</span>
 
 When you need help — or want a snapshot of node health for your own records —
 generate a diagnostic report:
@@ -521,7 +563,13 @@ $ freenet service report --no-message          # skip the description prompt
 ```
 
 Privacy note: the report contains your logs and config. Use `--local` first if
-you want to inspect exactly what would be sent. If the node isn't reachable when
+you want to inspect exactly what would be sent. Since a report uploads your
+logs wholesale, v0.2.134 added log-side redaction of credentials that external
+services can echo back: an authorization token or key returned in a collector's error
+body is stripped before that body reaches the log, and any `user:password@`
+embedded in a configured endpoint URL is stripped from every log line. That
+protects the metrics-collector credentials described in §19 — it is not a
+licence to put secrets in your config, which is uploaded as-is. If the node isn't reachable when
 the report is generated, the report says *why* (connection refused, timeout, …)
 rather than silently omitting network status — that distinction itself is a
 useful diagnostic.
@@ -574,7 +622,7 @@ Also remember: **unsupervised** nodes (installed with `FREENET_NO_SERVICE=1`, or
 hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 **dev/dirty builds** never auto-update by design.
 
-### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
+### 11.4 No peers / can't join the network
 
 0. **Check your version first** (v0.2.133): the transport handshake enforces a
    minimum compatible version, so a node that is too far out of date is
@@ -596,7 +644,7 @@ The node raises its own file-descriptor limit at startup to the kernel hard
 limit automatically. If you still see `EMFILE`/fd errors on an unusual setup,
 raise the hard limit for the service (systemd: `LimitNOFILE=`), then restart.
 
-### 11.6 Disk usage growing <span class="badge badge-upd">UPDATED</span>
+### 11.6 Disk usage growing
 
 Hosted contract state is bounded (default 1 GiB; overall disk budget is
 additionally capped — §17) and evicted least-valuable-first. Since v0.2.130,
@@ -608,11 +656,13 @@ bounded by disk headroom, not just RAM (v0.2.126). If disk still grows
 unboundedly, check the data directory with `du` and file an issue — nothing is
 supposed to grow without a budget anymore.
 
-## 12. Getting Help
+## 12. Getting Help <span class="badge badge-upd">UPDATED</span>
 
 1. **Generate a diagnostic report first** (§10) — it answers 90% of the
    questions a helper would ask.
-2. **Matrix chat:** `#freenet:matrix.org` — the developers are active here.
+2. **Matrix chat:** `#freenet-locutus:matrix.org` — the developers are active
+   here. (Not `#freenet:matrix.org`; older documentation linked that room by
+   mistake.)
 3. **GitHub issues:** <https://github.com/freenet/freenet-core/issues> — for
    reproducible bugs. Include your report reference, `freenet --version`
    output, OS, and what the self-check showed.
@@ -622,7 +672,7 @@ supposed to grow without a budget anymore.
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
+## 13. How Auto-Update Works
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -709,7 +759,7 @@ same page.
 
 # Part VII — Advancing: Power Use
 
-## 16. Secrets: Protecting Your Keys and Private Data <span class="badge badge-upd">UPDATED</span>
+## 16. Secrets: Protecting Your Keys and Private Data
 
 Delegates keep your private data (identity keys, chat-room keys, credentials)
 **encrypted at rest** on your node. The design in one paragraph: every secret is
@@ -748,7 +798,7 @@ contract state, caches, the binary — is replaceable; the secrets are not.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
+## 17. Storage and Resource Tuning
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
@@ -778,7 +828,7 @@ The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
+## 18. First Steps as a Developer
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -808,6 +858,129 @@ lives in `docs/architecture/` and the whitepaper.
 
 <div class="page-break"></div>
 
+## 19. Monitoring: Exporting Your Node's Metrics <span class="badge badge-new">NEW</span>
+
+*New in v0.2.134.* Your node can export its own metrics — transport, ring,
+contract queue, memory — to any OpenTelemetry (OTLP/HTTP) collector you run:
+Prometheus with the OTLP receiver, Grafana Alloy, the OpenTelemetry Collector,
+or a hosted service. This is how you graph your own node over time instead of
+reading a number off the dashboard.
+
+It is **off by default**, and it is a different thing from `telemetry-enabled`
+(§6.2), which sends a small amount of data to the project's own dashboard.
+Turning one on or off has no effect on the other; they share no setting.
+
+### 19.1 Turning it on
+
+In `config.toml`:
+
+```toml
+otel-telemetry-enabled = true
+otel-endpoint = "http://collector.example:4318"
+```
+
+or on the command line:
+
+```bash
+freenet network --otel-telemetry-enabled \
+    --otel-endpoint http://collector.example:4318
+```
+
+`--otel-telemetry-enabled=false` turns it back off without editing the file, and
+`FREENET_OTEL_TELEMETRY_ENABLED` works as an environment variable (unlike a
+plain flag, it honors `=false`). Nodes started with `--id` — test networks and
+the integration harness — never export, whatever the configuration says.
+
+| `config.toml` key | Default | Meaning |
+|---|---|---|
+| `otel-telemetry-enabled` | `false` | Enable the exporter |
+| `otel-endpoint` | none | Collector base URL; `/v1/metrics` is appended for you |
+| `otel-auth-mode` | `disabled` | `disabled` sends no `Authorization` header; `freenet` sends a signed token (§19.3) |
+
+### 19.2 Endpoint gotchas worth knowing before you debug
+
+The standard OpenTelemetry environment variables take priority over
+`otel-endpoint`, and three of them bite:
+
+- **The two endpoint variables are not interchangeable.**
+  `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is used exactly as written and must
+  include the full path (`http://collector:4318/v1/metrics`), while
+  `OTEL_EXPORTER_OTLP_ENDPOINT` takes the base URL only
+  (`http://collector:4318`). Getting them backwards produces a 404 on every
+  export.
+- **The timeout variables are in milliseconds.**
+  `OTEL_EXPORTER_OTLP_TIMEOUT=10` means 10 ms, and every export will time out.
+  The node warns about implausibly small values.
+- **`OTEL_EXPORTER_OTLP_COMPRESSION` is not supported.** Setting it makes the
+  exporter fail to start, leaving you with no metrics at all; the startup
+  warning names the cause.
+
+Always include the scheme: a bare `collector:4318` parses as a URL but cannot be
+sent. When an environment variable overrides your configured endpoint, the node
+says so at startup, and the "OTel metrics exporter started" log line always
+names the endpoint actually in use — check that line first when nothing arrives.
+With no endpoint configured anywhere, the exporter targets
+`http://localhost:4318`. The default export interval is 60 seconds
+(`OTEL_METRIC_EXPORT_INTERVAL`).
+
+### 19.3 Authentication, and why credentials refuse to travel in cleartext
+
+For most setups leave `otel-auth-mode` at `disabled` and carry whatever your
+collector wants in `OTEL_EXPORTER_OTLP_HEADERS`:
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic $(printf 'user:pass' | base64)"
+```
+
+The node never overwrites an `Authorization` header you set this way, so
+ordinary header auth works in the default mode with nothing Freenet-specific.
+
+Whichever kind of credential is in play, the node refuses to leak it:
+
+- **A credential requires `https://`** unless the collector is on loopback.
+  Plaintext `http://` to anything other than `localhost`/`127.0.0.0/8`/`::1`
+  fails the export with a warning rather than putting the credential on the
+  wire. (The loopback exemption covers the common case, a collector sidecar on
+  the same host.)
+- **Redirects are not followed**, so an `https` endpoint cannot bounce your
+  header to an `http` one.
+- **`HTTP_PROXY`/`HTTPS_PROXY` are ignored.** Otherwise a proxy set in your
+  environment would receive an export aimed at `http://localhost:4318` —
+  passing the loopback exemption and leaving the machine anyway. If your
+  collector is only reachable through a proxy, point `otel-endpoint` at the
+  proxy.
+- **Credentials are redacted from logs** (see §10).
+
+`otel-auth-mode = "freenet"` is for collectors that verify Freenet node
+identities: it adds a bearer token signed with your node's transport key, so the
+collector can confirm the metrics came from the node they claim to. Enable it
+only for a collector that actually checks those tokens — it ships a signed
+assertion of your node's identity to wherever it is pointed. The verification
+rules a collector must implement are in `docs/otel-metrics.md` in the source
+tree.
+
+### 19.4 What gets exported, and how your node is identified
+
+Instruments cover transport (bytes, packets, transfers, NAT traversal, RTT,
+congestion window), operations by type and result, ring connections and lattice
+neighbors, hosted contracts by reason and bytes, contract-queue depth and
+rejections, gateway connect failures, and process RSS
+(`freenet.process.memory.rss`, Linux only — an empty series on macOS and Windows
+is expected, not a broken pipeline).
+
+Every batch carries two resource attributes: `freenet.node.pubkey` (your node's
+transport public key) and `freenet.node.fingerprint` (the short form shown in
+the dashboard). **Both are sent in every auth mode, `disabled` included** —
+`disabled` withholds the signature, not the identity, because metrics with no
+node id to group them by would be useless. If you do not want a node
+identifiable to a collector, do not export to that collector.
+
+Export failures never affect the node: a collector that is down produces a
+warning naming the endpoint and reason — once per failing streak, not once per
+interval — and an informational line when exports recover.
+
+<div class="page-break"></div>
+
 # Part VIII — Uninstalling
 
 Freenet removes cleanly:
@@ -829,11 +1002,12 @@ service but keep the binary (e.g. switching to hand-run mode), use
 
 # Appendices
 
-## Appendix A — CLI Quick Reference
+## Appendix A — CLI Quick Reference <span class="badge badge-upd">UPDATED</span>
 
 | Command | One-liner |
 |---|---|
 | `freenet` / `freenet network` | Run the node (network mode). |
+| `freenet network --otel-telemetry-enabled --otel-endpoint URL` | Export node metrics to your own OTLP collector (§19). |
 | `freenet local` | Run a sandboxed local-only node. |
 | `freenet --version` | Version + git commit + build timestamp. |
 | `freenet service install [--system] [--no-linger]` | Install as a supervised service. |
@@ -847,7 +1021,7 @@ service but keep the binary (e.g. switching to hand-run mode), use
 | `freenet uninstall [--purge | --keep-data] [--system]` | Remove Freenet. |
 | `fdev …` | Developer tool (§18). |
 
-## Appendix B — Default Ports and File Locations <span class="badge badge-upd">UPDATED</span>
+## Appendix B — Default Ports and File Locations
 
 **Ports**
 
@@ -901,9 +1075,24 @@ the *current* revision are additionally badged inline throughout the text.
 |---|---|---|---|
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
+| **1.2** | 2026-09-07 | 0.2.134 | Metrics export to your own OpenTelemetry collector (new §19); project telemetry endpoint moved to `telemetry.freenet.org`; corrected Matrix room; role-based gateway names; app-visible reliability fixes; credential redaction in diagnostic reports. |
 
-**Revision 1.1 delta ledger** (every badge in this edition traces to a row
+**Revision 1.2 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §1.3 Where to learn more | UPDATED | Community chat is `#freenet-locutus:matrix.org`; the previously listed room was not the project's | v0.2.134 |
+| §4 Using applications | UPDATED | Streaming PUTs no longer misreported as failed; locally-stored contracts not suppressed by a transient fetch failure; delegate failures surfaced to the app and delegates notified on initial state install | v0.2.134 |
+| §6.2 Options | UPDATED | Telemetry endpoint default moved to `telemetry.freenet.org:4318` with automatic migration of the old value; `--otel-telemetry-enabled` added | v0.2.134 |
+| §6.4 Running a gateway | UPDATED | Gateways named by role (`gw1`/`gw2.freenet.org`) in examples, keys, and docs | v0.2.134 |
+| §10 Diagnostic reports | UPDATED | Echoed credentials and URL userinfo redacted from logs before a report uploads them | v0.2.134 |
+| §12 Getting help | UPDATED | Corrected Matrix room | v0.2.134 |
+| §19 Monitoring | NEW | Full section: OTLP metrics exporter — enabling it, endpoint precedence, cleartext-credential refusal, signed-token auth mode, exported instruments and node identity | v0.2.134 |
+| Appendix A | UPDATED | Metrics-export invocation added to the quick reference | v0.2.134 |
+
+**Revision 1.1 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -922,8 +1111,9 @@ here; "driver" names the upstream release or marks the change as editorial):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:86%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:100%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:92%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:96%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -933,7 +1123,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.1 · covers Freenet v0.2.133 ·
+<p class="footer-note">Freenet User Manual rev 1.2 · covers Freenet v0.2.134 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
