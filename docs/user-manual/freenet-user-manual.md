@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.2</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.134</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-07</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.3</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.135</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-11</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -35,8 +35,8 @@ of both the software and your own journey with it:
 - **Appendix E** contains the full revision history and the growth chart: which
   sections existed at each revision, and how coverage has expanded over time.
 
-This is revision 1.2. Badges in this edition mark what changed between Freenet
-v0.2.133 and v0.2.134; the previous revision's badges have been retired, and
+This is revision 1.3. Badges in this edition mark what changed between Freenet
+v0.2.134 and v0.2.135; the previous revision's badges have been retired, and
 every badge here traces to a row in Appendix E's delta ledger, which names the
 release that drove it (or marks it editorial). Appendix E also keeps the
 earlier revisions' ledgers, so you can see what each edition changed even
@@ -109,7 +109,7 @@ central index.
 - It does **not** require you to be a developer. Running a node and using apps
   needs no programming at all.
 
-### 1.3 Where to learn more <span class="badge badge-upd">UPDATED</span>
+### 1.3 Where to learn more
 
 - Website: <https://freenet.org/>
 - Whitepaper (architecture deep-dive): <https://freenet.org/whitepaper/>
@@ -133,7 +133,7 @@ central index.
 - **Network:** an ordinary internet connection. Freenet uses UDP (default port
   31337) and works behind most home routers/NAT without configuration.
 
-### 2.2 Recommended install (Linux and macOS)
+### 2.2 Recommended install (Linux and macOS) <span class="badge badge-upd">UPDATED</span>
 
 Run the official installer:
 
@@ -149,6 +149,18 @@ The installer:
 - on Linux, prefers a system-wide service when it can elevate (root or sudo),
   otherwise installs a user service with *lingering* enabled so the node keeps
   running when you're logged out.
+
+Two installer fixes landed in v0.2.135 that matter if the first install didn't
+take cleanly:
+
+- **SELinux file contexts are restored after the binaries are copied.** On
+  Fedora, RHEL and other SELinux systems, a binary installed into a new location
+  could end up with a label that stopped systemd from executing it — a failure
+  that looks like a broken install rather than a policy problem. If you hit that
+  before, re-running the installer now fixes it.
+- **A user-level binary now gets a user-level service.** Previously the choice of
+  service scope could disagree with where the binary actually lived, producing a
+  service that pointed at a path it wasn't allowed to run.
 
 You can customize it with environment variables before the command:
 
@@ -302,11 +314,26 @@ that looked broken may simply have been mis-reported:
   on later changes. An app that seemed to hang on first use should now either
   work or tell you why.
 
+**Delegates can reach the network now (v0.2.135).** Previously a delegate — the
+part of an app that runs only on your machine and holds your private data — could
+only see contract state your node already had. Delegates can now perform GET and
+SUBSCRIBE over the network, so an app's private half can fetch and follow
+contracts directly instead of routing everything through its web front-end.
+Expect apps to feel less dependent on having a browser tab open.
+
+Two limits worth knowing, because an app may bump into them rather than fail
+outright. A single delegate may subscribe to at most **256 contracts**, and when
+it reaches that ceiling the node **evicts its least-recently-notified
+subscription** rather than refusing the new one — so a busy subscription stays
+live while a dormant one is quietly dropped. The cap is deliberately **not
+configurable**: a tunable limit would mean the same app works on some peers and
+not others, which is precisely the non-uniformity Freenet avoids.
+
 <div class="page-break"></div>
 
 # Part III — Operating Your Node
 
-## 5. The Service: Day-to-Day Control
+## 5. The Service: Day-to-Day Control <span class="badge badge-upd">UPDATED</span>
 
 All service management goes through `freenet service …`. On Linux these commands
 drive systemd (user service by default; add `--system` everywhere if you
@@ -329,9 +356,17 @@ next boot. `disable` writes a persistent marker that makes the node refuse to
 run until you `enable` it again. Use `disable` when you want Freenet off for a
 while on a laptop, for example.
 
+> **Stopping the node on purpose is no longer mistaken for a crash** (v0.2.135).
+> The supervisor counts crashes to decide whether a freshly updated version
+> should be rolled back (§13). A deliberate `freenet service stop` — or a
+> `systemctl stop` — used to be counted the same as a crash, so stopping your
+> node a few times shortly after an update could trip the crash-loop detector
+> and revert a version that was working perfectly. Deliberate stops are now
+> recognized as deliberate.
+
 ## 6. Configuration
 
-### 6.1 Where things live (Linux)
+### 6.1 Where things live (Linux) <span class="badge badge-upd">UPDATED</span>
 
 | What | Default location |
 |---|---|
@@ -345,7 +380,15 @@ Override with `--config-dir`, `--data-dir`, `--log-dir` flags or the
 `CONFIG_DIR`, `DATA_DIR`, `LOG_DIR` environment variables. See Appendix B for
 macOS/Windows paths.
 
-### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
+> **Your config file is `config.toml` — exactly that name** (v0.2.135). The node
+> used to scan the config directory and could pick up a near-miss such as
+> `config.bak.toml` or `config.old.toml` instead of the real file, silently
+> running on settings you thought you had retired. It now loads `config.toml`
+> directly when it exists and does not scan the directory at all. Keeping backup
+> copies alongside your live config is safe again — but if you have been relying
+> on a differently named file being found, rename it to `config.toml`.
+
+### 6.2 Options you're most likely to touch
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -377,7 +420,7 @@ Every option can be given as a CLI flag or an environment variable:
   most home users need no router configuration. Opening/forwarding 31337/UDP can
   improve connectivity but is not required unless you run a gateway.
 
-### 6.4 Running a gateway (advanced) {#gateway} <span class="badge badge-upd">UPDATED</span>
+### 6.4 Running a gateway (advanced) {#gateway}
 
 A gateway is a node with a stable public address that helps new peers join. To
 run one you need a public IP and an open UDP port, and you start the node with:
@@ -538,7 +581,7 @@ The self-check is designed so that **every failing step points at a fix**:
 - Anything you can't classify → generate a diagnostic report (§10) and ask for
   help (§12).
 
-## 10. Diagnostic Reports <span class="badge badge-upd">UPDATED</span>
+## 10. Diagnostic Reports
 
 When you need help — or want a snapshot of node health for your own records —
 generate a diagnostic report:
@@ -656,7 +699,7 @@ bounded by disk headroom, not just RAM (v0.2.126). If disk still grows
 unboundedly, check the data directory with `du` and file an issue — nothing is
 supposed to grow without a budget anymore.
 
-## 12. Getting Help <span class="badge badge-upd">UPDATED</span>
+## 12. Getting Help
 
 1. **Generate a diagnostic report first** (§10) — it answers 90% of the
    questions a helper would ask.
@@ -672,7 +715,7 @@ supposed to grow without a budget anymore.
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works
+## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -705,6 +748,34 @@ you from a bad release. The pipeline:
 You can watch all of this happen in `freenet service logs` — a healthy update
 shows an exit-42, an update run, and a restart on the new version.
 
+**When the safety net itself fails, the updater now says so** (v0.2.135). Steps
+4 and 5 above depend on two things that can quietly go wrong: saving the
+known-good binary before the swap, and arming the probation marker after it.
+Either one failing used to be silent — the update landed, everything looked
+normal, and rollback protection was simply *off*. Both now print a warning:
+
+```
+Freenet: failed to snapshot the known-good binary for crash-loop rollback: …
+PROCEEDING WITHOUT ROLLBACK PROTECTION for this update — if this version
+crash-loops it will NOT be auto-reverted. Check the permissions and free space
+on the Freenet state directory.
+```
+
+```
+Freenet: installed the update but FAILED TO ARM crash-loop rollback protection: …
+If this version crash-loops it will NOT be auto-reverted. Check the permissions
+and free space on the Freenet state directory.
+```
+
+Both point at the same two causes: **permissions** on the Freenet state
+directory, or **free disk space**. Fix whichever applies and run
+`freenet update --force` to redo the update with protection in place.
+
+Note that `--quiet` does **not** suppress these. The flag means "be less
+chatty", never "stop recording safety events" — a suppressed warning here is
+exactly the case where you would never learn that the net was missing until a
+release crash-looped with nothing to roll back to.
+
 ## 14. Updating Manually
 
 ### 14.1 Commands
@@ -719,12 +790,24 @@ $ freenet update --quiet    # no interactive output (for scripts)
 After a manual update, restart the service (`freenet service restart`) and run
 self-check steps 1–4.
 
-### 14.2 After a bad update
+### 14.2 After a bad update <span class="badge badge-upd">UPDATED</span>
 
 Normally you do nothing: automatic rollback (§13 step 5) handles a
 crash-looping release, and the node then simply skips that version. When a fixed
 release ships, update as usual — `freenet update --force` if the fixed release
 reuses a version number the node has pinned as known-bad.
+
+**First check whether rollback protection was actually armed.** Since v0.2.135
+the updater warns when it could not snapshot the known-good binary, or could not
+arm the probation marker (§13). If you see either warning in
+`freenet service logs`, automatic rollback is *not* available for that update and
+a crash-looping version will keep crash-looping. Recover by hand:
+
+1. Fix the cause the warning names — permissions or free space on the state
+   directory.
+2. Reinstall a known-good version: `freenet update --force`, or install a
+   specific release with `FREENET_VERSION=<version>` via the installer (§2.2).
+3. Restart and run self-check steps 1–4.
 
 ### 14.3 Keeping an *unsupervised* node current
 
@@ -759,7 +842,7 @@ same page.
 
 # Part VII — Advancing: Power Use
 
-## 16. Secrets: Protecting Your Keys and Private Data
+## 16. Secrets: Protecting Your Keys and Private Data <span class="badge badge-upd">UPDATED</span>
 
 Delegates keep your private data (identity keys, chat-room keys, credentials)
 **encrypted at rest** on your node. The design in one paragraph: every secret is
@@ -777,6 +860,16 @@ the `freenet secrets` commands:
 | `freenet secrets restore` | Roll a secret back to an earlier snapshot (the current value is snapshotted first, so this is reversible). | **stopped** |
 | `freenet secrets export` | Pack a scope's secrets into one **encrypted, portable bundle** — e.g. to move your identity to a new machine. | **stopped** |
 | `freenet secrets import` | Import a bundle produced by `export` on another node. | **stopped** |
+
+**Delegates that hold your secrets are harder to wedge (v0.2.135).** Delegate
+WebAssembly now runs under the same **wall-clock time limit and panic capture**
+that contracts already had, so a delegate that hangs or panics is stopped and
+reported instead of tying up the node — and delegate execution was moved off the
+node's serial loop, so a slow delegate no longer blocks unrelated work. A
+related fix means each secret is **decrypted once per read** rather than
+repeatedly, which shortens the window in which plaintext exists in memory.
+Nothing changes in how you use `freenet secrets`; the guarantees underneath it
+got stronger.
 
 **Backends:** `keyring` (OS keychain / Credential Manager — strongest for
 desktops; the auto-resolver deliberately does *not* pick it silently, because it
@@ -828,7 +921,7 @@ The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer
+## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -849,6 +942,18 @@ cargo install --path crates/fdev     # or: cargo install fdev
 | `fdev website init/publish/update` | Keypair-based publishing of static websites on Freenet. |
 | `fdev commands get/subscribe/update` | Raw contract operations against a node's WebSocket API. |
 
+**New for delegate authors in v0.2.135.** V1 delegates can now issue **GET and
+SUBSCRIBE against the network**, not just against state the node already holds,
+and V2 delegate contract writes propagate to the network. Two constraints to
+design against: a delegate may hold at most **256 contract subscriptions**, and
+exceeding that **evicts the least-recently-notified** subscription rather than
+returning an error — so a delegate that quietly depends on a dormant
+subscription can lose it. The cap is intentionally not configurable, so you can
+rely on it being the same number on every peer. Delegate WASM now also runs
+under a wall-clock backstop with panic capture, so an infinite loop in your
+delegate surfaces as a reported failure instead of a hung node. This release
+also moves to **`freenet-stdlib` 0.10.0** — rebuild against it before publishing.
+
 The recommended path: run a node in **local mode** (`freenet local` — a
 sandboxed node with no network traffic), then build and publish against it, then
 graduate to the real network. Study the example app `apps/freenet-ping` in the
@@ -858,7 +963,7 @@ lives in `docs/architecture/` and the whitepaper.
 
 <div class="page-break"></div>
 
-## 19. Monitoring: Exporting Your Node's Metrics <span class="badge badge-new">NEW</span>
+## 19. Monitoring: Exporting Your Node's Metrics
 
 *New in v0.2.134.* Your node can export its own metrics — transport, ring,
 contract queue, memory — to any OpenTelemetry (OTLP/HTTP) collector you run:
@@ -1002,7 +1107,7 @@ service but keep the binary (e.g. switching to hand-run mode), use
 
 # Appendices
 
-## Appendix A — CLI Quick Reference <span class="badge badge-upd">UPDATED</span>
+## Appendix A — CLI Quick Reference
 
 | Command | One-liner |
 |---|---|
@@ -1075,10 +1180,25 @@ the *current* revision are additionally badged inline throughout the text.
 |---|---|---|---|
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
+| **1.3** | 2026-09-11 | 0.2.135 | Update-safety warnings when crash-loop rollback is not armed; deliberate stops no longer counted as crashes; exact `config.toml` honored; SELinux/user-service install fixes; delegates reach the network under a 256-subscription cap; stdlib 0.10.0. |
 | **1.2** | 2026-09-07 | 0.2.134 | Metrics export to your own OpenTelemetry collector (new §19); project telemetry endpoint moved to `telemetry.freenet.org`; corrected Matrix room; role-based gateway names; app-visible reliability fixes; credential redaction in diagnostic reports. |
 
-**Revision 1.2 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.3 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §2.2 Recommended install | UPDATED | SELinux file contexts restored after install; a user-level binary now gets a user-level service | v0.2.135 |
+| §4 Using applications | UPDATED | Delegates can GET and SUBSCRIBE over the network; 256-subscription cap evicts the least-recently-notified rather than refusing | v0.2.135 |
+| §5 The Service | UPDATED | A deliberate `service stop` / `systemctl stop` is no longer counted as a crash by the rollback detector | v0.2.135 |
+| §6.1 Where things live | UPDATED | Exact `config.toml` is loaded directly; the directory is no longer scanned, so a `config.bak.toml` can't be picked up instead | v0.2.135 |
+| §13 Auto-update | UPDATED | The two states where crash-loop rollback protection is silently off now warn, and `--quiet` does not suppress them | v0.2.135 |
+| §14.2 After a bad update | UPDATED | Check whether rollback was armed before assuming it will save you; manual recovery steps | v0.2.135 |
+| §16 Secrets | UPDATED | Delegate WASM gains the wall-clock backstop and panic capture contracts had; delegates parked off the serial loop; secrets decrypted once per read | v0.2.135 |
+| §18 Developer | UPDATED | Delegate network GET/SUBSCRIBE, the non-configurable 256 cap and its eviction rule, `freenet-stdlib` 0.10.0 | v0.2.135 |
+
+**Revision 1.2 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1111,9 +1231,10 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:92%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:96%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:88%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:92%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:96%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:100%">19 sections + 5 appendices · 8 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1123,7 +1244,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.2 · covers Freenet v0.2.134 ·
+<p class="footer-note">Freenet User Manual rev 1.3 · covers Freenet v0.2.135 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
