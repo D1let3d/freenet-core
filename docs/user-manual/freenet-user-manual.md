@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.3</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.135</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-11</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.4</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.136</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-22</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -35,8 +35,8 @@ of both the software and your own journey with it:
 - **Appendix E** contains the full revision history and the growth chart: which
   sections existed at each revision, and how coverage has expanded over time.
 
-This is revision 1.3. Badges in this edition mark what changed between Freenet
-v0.2.134 and v0.2.135; the previous revision's badges have been retired, and
+This is revision 1.4. Badges in this edition mark what changed between Freenet
+v0.2.135 and v0.2.136; the previous revision's badges have been retired, and
 every badge here traces to a row in Appendix E's delta ledger, which names the
 release that drove it (or marks it editorial). Appendix E also keeps the
 earlier revisions' ledgers, so you can see what each edition changed even
@@ -128,12 +128,13 @@ central index.
 
 - **OS:** Linux (x86_64/aarch64), macOS, or Windows.
 - **Memory:** 1 GB+ available RAM recommended.
-- **Disk:** by default Freenet will use up to about 1 GiB for hosted contract
-  state (configurable — see §17), plus logs and caches.
+- **Disk:** by default Freenet sizes its hosted-contract-state budget from
+  available memory — one eighth of it, never more than 1 GiB (configurable, and
+  raising it is how you contribute disk — see §17) — plus logs and caches.
 - **Network:** an ordinary internet connection. Freenet uses UDP (default port
   31337) and works behind most home routers/NAT without configuration.
 
-### 2.2 Recommended install (Linux and macOS) <span class="badge badge-upd">UPDATED</span>
+### 2.2 Recommended install (Linux and macOS)
 
 Run the official installer:
 
@@ -250,7 +251,48 @@ Then open `http://127.0.0.1:7509/` as usual. Three things to know:
 A ready-made `docker-compose.yml` lives in `docker/freenet-node/` in the
 source repository, alongside the full container documentation.
 
-## 3. First Run and the Dashboard
+### 2.7 Nix <span class="badge badge-new">NEW</span>
+
+*New in v0.2.136.* Nix is now a **supported deployment path**, not merely a way
+to get a compiler:
+
+```bash
+nix run github:freenet/freenet-core          # the supervised, self-updating node
+nix build github:freenet/freenet-core#freenet  # build only: the bare binary
+nix develop                                   # dev shell: pinned toolchain, nextest, …
+```
+
+**The distinction between the two outputs is the whole point, and it is easy to
+get wrong:**
+
+| Output | Auto-updates | Use it for |
+|---|---|---|
+| `packages.freenet-node` (also `packages.default`) | **Yes** | Running a peer. The only supported way to do that. |
+| `packages.freenet` | **No** | Building and development only — CI, `nix develop`, packaging. |
+
+`packages.freenet` is *just the binary*: nothing seeds it into a writable
+location and nothing restarts it, so a peer started from it never updates
+itself and will fall behind the network's compatibility floor (§13).
+
+> **The overlay trap.** If you apply `overlays.default`, `pkgs.freenet` is the
+> **bare** binary. Writing `environment.systemPackages = [ pkgs.freenet ];` puts
+> a `freenet` on every user's PATH that carries no supervisor, never updates
+> itself, and says nothing about either. Use `pkgs.freenet-node` for anything
+> that runs a peer.
+
+**Why the self-updating node doesn't run from `/nix/store`.** `freenet update`
+replaces the *running* binary in place, and the Nix store is read-only — so the
+updater cannot run from a store path. Rather than make Nix the updater,
+`freenet-node` seeds the Nix-built binary once into a mutable state directory
+(`$STATE_DIRECTORY/bin/freenet` under systemd, otherwise
+`${XDG_STATE_HOME:-$HOME/.local/state}/freenet/bin/freenet`) and supervises it
+from there. Arguments are forwarded, so `nix run … -- --config-dir /srv/freenet`
+works as you'd expect. The older name `freenet-autoupdate` still works as an
+alias.
+
+Full details are in `docs/nix.md` in the source repository.
+
+## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -265,6 +307,15 @@ success rate** (real fetch outcomes, not a synthetic health verdict), offers a
 **per-contract detail page** at `/contract/{key}` for anything your node hosts,
 follows your OS light/dark theme, and its tables filter and collapse for small
 screens.
+
+**Per-peer detail pages arrived in v0.2.136.** Alongside the contract pages,
+the dashboard now opens a page for each peer your node is connected to, showing
+how well the router's predictions about that peer have actually held up. The
+headline reading is a **skill score**: how much better the router's estimates
+are than assuming nothing. A negative score is labelled in words —
+*"worse than assuming nothing"* — rather than left as a bare `-0.43` for you to
+interpret, which is the right call for a number most people meet for the first
+time on that page.
 
 If you skipped the service, you can run a node in the foreground:
 
@@ -314,6 +365,13 @@ that looked broken may simply have been mis-reported:
   on later changes. An app that seemed to hang on first use should now either
   work or tell you why.
 
+**Apps can go fullscreen (v0.2.136).** The sandbox your node runs an app in now
+permits fullscreen, so a Freenet app can fill the screen like any ordinary web
+app. A second fix in the same release means a **streaming upload that fails
+while being relayed now reports the failure upstream instead of going quiet** —
+the same class of "looked like a hang, was actually an unreported error" that
+§4's earlier fixes addressed.
+
 **Delegates can reach the network now (v0.2.135).** Previously a delegate — the
 part of an app that runs only on your machine and holds your private data — could
 only see contract state your node already had. Delegates can now perform GET and
@@ -333,7 +391,7 @@ not others, which is precisely the non-uniformity Freenet avoids.
 
 # Part III — Operating Your Node
 
-## 5. The Service: Day-to-Day Control <span class="badge badge-upd">UPDATED</span>
+## 5. The Service: Day-to-Day Control
 
 All service management goes through `freenet service …`. On Linux these commands
 drive systemd (user service by default; add `--system` everywhere if you
@@ -366,7 +424,7 @@ while on a laptop, for example.
 
 ## 6. Configuration
 
-### 6.1 Where things live (Linux) <span class="badge badge-upd">UPDATED</span>
+### 6.1 Where things live (Linux)
 
 | What | Default location |
 |---|---|
@@ -388,7 +446,7 @@ macOS/Windows paths.
 > copies alongside your live config is safe again — but if you have been relying
 > on a differently named file being found, rename it to `config.toml`.
 
-### 6.2 Options you're most likely to touch
+### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -398,11 +456,12 @@ Every option can be given as a CLI flag or an environment variable:
 | `--network-port` | `31337` | UDP port for peer-to-peer traffic. |
 | `--address` | `::` (dual-stack) | Bind address for the network listener. |
 | `--log-level` (`LOG_LEVEL`) | `info` | `error`, `warn`, `info`, `debug`, `trace`. |
-| `--max-hosting-storage` | 1 GiB | Budget for hosted contract state; least-valuable contracts are evicted beyond this (§17). |
+| `--max-hosting-storage` | **RAM ÷ 8**, clamped 128 MiB–1 GiB | Budget for hosted contract **disk** state; least-valuable contracts are evicted beyond this (§17). Not a flat 1 GiB — 1 GiB is the *cap*. |
 | `--max-blocking-threads` | 2×CPU (4–32) | Worker threads for WASM execution. |
 | `--telemetry-enabled` (`FREENET_TELEMETRY_ENABLED`) | on during alpha | Sends operation timing and network topology to the project's dashboard. Contract content is never included. |
 | `--telemetry-endpoint` (`FREENET_TELEMETRY_ENDPOINT`) | `http://telemetry.freenet.org:4318` | Where that telemetry goes (see the note below). |
 | `--otel-telemetry-enabled` (`FREENET_OTEL_TELEMETRY_ENABLED`) | `false` | Export **your own** node's metrics to **your own** OpenTelemetry collector (§19). Entirely separate from `--telemetry-enabled`. |
+| `FREENET_ROUTING_HIERARCHICAL` | on | The hierarchical routing estimator, **enabled by default since v0.2.136**. Set to `0` to fall back to the previous estimator. |
 
 > **The project telemetry endpoint moved in v0.2.134**, from
 > `nova.locut.us:4318` to `telemetry.freenet.org:4318` — a role-based name, so
@@ -636,7 +695,14 @@ useful diagnostic.
    automatically** to the previous known-good version (§14.2). If crashes are
    unrelated to an update, capture a report (§10) and ask for help (§12).
 
-### 11.2 Port already in use / exit code 43 / dashboard unreachable
+### 11.2 Port already in use / exit code 43 / dashboard unreachable <span class="badge badge-upd">UPDATED</span>
+
+> **Restarting immediately after a stop is more reliable in v0.2.136.** The
+> check for "is another node already running?" used to be fooled by the socket
+> of a process that was still dying, so a restart issued a moment after a stop
+> could fail with a port conflict against a node that no longer existed. The
+> check now retries past that. If you previously had to wait a few seconds
+> between `stop` and `start`, you no longer do.
 
 - Another process (often an orphaned old Freenet process) holds the network
   port. The supervisor kills genuine orphans automatically (up to 3 attempts);
@@ -776,6 +842,22 @@ chatty", never "stop recording safety events" — a suppressed warning here is
 exactly the case where you would never learn that the net was missing until a
 release crash-looped with nothing to roll back to.
 
+**The end of probation now announces itself, accurately (v0.2.136).** When the
+probation window closes the node prints what actually happened, and each
+possible outcome gets its own wording rather than a line shared between two of
+them — because the two facts you would act on (did this version pass, and is
+rollback still available?) differ between outcomes, so a shared line is wrong
+for at least one of them.
+
+The same release fixed something worth knowing about, because it is an
+unusually neat failure. The announcement used to be printed with a call that
+*panics* if the write fails — which it can, when the supervisor's reader has
+already gone away. A panic on a worker thread would exit the node non-zero; a
+non-zero exit during probation is scored as a crash; and three crashes roll the
+node back. So the announcement that an update had **succeeded** could itself
+have caused the rollback it was reporting as no longer necessary. It now writes
+that line without being able to take the process down.
+
 ## 14. Updating Manually
 
 ### 14.1 Commands
@@ -790,7 +872,7 @@ $ freenet update --quiet    # no interactive output (for scripts)
 After a manual update, restart the service (`freenet service restart`) and run
 self-check steps 1–4.
 
-### 14.2 After a bad update <span class="badge badge-upd">UPDATED</span>
+### 14.2 After a bad update
 
 Normally you do nothing: automatic rollback (§13 step 5) handles a
 crash-looping release, and the node then simply skips that version. When a fixed
@@ -842,7 +924,7 @@ same page.
 
 # Part VII — Advancing: Power Use
 
-## 16. Secrets: Protecting Your Keys and Private Data <span class="badge badge-upd">UPDATED</span>
+## 16. Secrets: Protecting Your Keys and Private Data
 
 Delegates keep your private data (identity keys, chat-room keys, credentials)
 **encrypted at rest** on your node. The design in one paragraph: every secret is
@@ -891,13 +973,13 @@ contract state, caches, the binary — is replaceable; the secrets are not.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning
+## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
 | Dial | Default | Notes |
 |---|---|---|
-| `--max-hosting-storage` | 1 GiB | RAM-style budget on tracked contract state; beyond it, least-valuable contracts are evicted and their disk reclaimed. |
+| `--max-hosting-storage` | **memory ÷ 8**, clamped 128 MiB–1 GiB | Budget on tracked contract state **kept on disk** (only memory-bounded caches of it live in RAM); beyond it, least-valuable contracts are evicted and their disk reclaimed. |
 | `--hosting-disk-pct` | 0.5 | Fraction of the disk capacity available to Freenet used to size the aggregate disk budget. The effective budget is the **minimum** of the two budgets. |
 | `--max-hosting-disk` | 32 GiB | Hard cap on the disk budget regardless of disk size. |
 
@@ -916,6 +998,36 @@ overhead estimate, and bounds the compiled-WASM cache by actual disk headroom
 as well as RAM. In practice this means a node on a small VPS behaves itself
 without hand-tuning, and eviction responds to real pressure instead of
 worst-case guesses.
+
+**Two corrections landed in v0.2.136, and earlier revisions of this manual had
+both of them wrong.**
+
+*First, the default is not a flat 1 GiB.* It is one eighth of the memory
+available to the node — system RAM, or the cgroup limit if that is lower —
+clamped to between 128 MiB and 1 GiB. 1 GiB is the ceiling, not the starting
+point, so a small VPS starts well below it.
+
+*Second, this dial governs **disk**, not RAM.* Contract state is kept on disk;
+only bounded caches of it are held in memory. Calling it a "RAM-style budget",
+as this manual did through revision 1.3, misdescribed what you are actually
+contributing.
+
+**`--max-hosting-storage` is how you contribute disk to the network — and there
+is a rule for raising it.** Keep it a few GiB *below* your disk budget. That
+budget is the smaller of `--hosting-disk-pct` of the space available to Freenet
+and `--max-hosting-disk`, and it counts WASM code and the compile cache (up to
+about 512 MiB) as well as state. The gap is the headroom those need. **If you
+set it too close to the disk budget, the node stops accepting new contracts and
+state growth instead of evicting to make room** — the opposite of what you
+intended by raising it.
+
+Worked example: with 40 GiB available to Freenet and default settings, the disk
+budget is min(0.5 × 40 GiB, 32 GiB) = 20 GiB, so set `--max-hosting-storage` to
+about **17 GiB**. On a larger disk the 32 GiB cap binds unless you raise
+`--max-hosting-disk` too. Leave more headroom if your node hosts many contracts
+with distinct code, since WASM grows with those. Raising this dial does not make
+your node take on more contracts than its memory can hold — that ceiling is set
+separately.
 
 The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
@@ -941,6 +1053,12 @@ cargo install --path crates/fdev     # or: cargo install fdev
 | `fdev verify-merge` | Check that a contract's merge obeys the laws the network requires (order-independence, associativity, idempotence) — the *same* verifier the network runs. A contract that fails here cannot converge on the network. Formerly named `conformance`. *(New in v0.2.129–0.2.133.)* |
 | `fdev website init/publish/update` | Keypair-based publishing of static websites on Freenet. |
 | `fdev commands get/subscribe/update` | Raw contract operations against a node's WebSocket API. |
+
+**Breaking for delegate authors in v0.2.136:** the *synchronous* delegate
+contract-write host functions have been removed. A delegate that wrote contract
+state through them must move to the asynchronous path (the same one that carries
+the network GET/SUBSCRIBE described below). Rebuild and test any delegate that
+writes contract state before publishing against this release.
 
 **New for delegate authors in v0.2.135.** V1 delegates can now issue **GET and
 SUBSCRIBE against the network**, not just against state the node already holds,
@@ -1180,11 +1298,26 @@ the *current* revision are additionally badged inline throughout the text.
 |---|---|---|---|
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
+| **1.4** | 2026-09-22 | 0.2.136 | Nix as a supported deployment path; per-peer dashboard pages; fullscreen apps; probation announcements that can't cause the rollback they report; and two corrections to this manual's own storage-tuning claims. |
 | **1.3** | 2026-09-11 | 0.2.135 | Update-safety warnings when crash-loop rollback is not armed; deliberate stops no longer counted as crashes; exact `config.toml` honored; SELinux/user-service install fixes; delegates reach the network under a 256-subscription cap; stdlib 0.10.0. |
 | **1.2** | 2026-09-07 | 0.2.134 | Metrics export to your own OpenTelemetry collector (new §19); project telemetry endpoint moved to `telemetry.freenet.org`; corrected Matrix room; role-based gateway names; app-visible reliability fixes; credential redaction in diagnostic reports. |
 
-**Revision 1.3 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.4 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §2.7 Nix | NEW | Nix as a supported deployment path: `freenet-node` self-updates, `freenet` is build-only, and the `overlays.default` trap that puts a non-updating binary on every user's PATH | v0.2.136 |
+| §3 Dashboard | UPDATED | Per-peer detail pages with routing-prediction skill scores, negative values labelled in words | v0.2.136 |
+| §4 Using applications | UPDATED | Apps may go fullscreen; streaming relay failures reported upstream instead of going silent | v0.2.136 |
+| §6.2 Options | UPDATED | `--max-hosting-storage` default corrected to memory ÷ 8 (1 GiB is the cap); `FREENET_ROUTING_HIERARCHICAL` on by default | v0.2.136 |
+| §11.2 Port already in use | UPDATED | The single-instance check retries past a dying process's socket, so an immediate restart after a stop no longer fails | v0.2.136 |
+| §13 Auto-update | UPDATED | End-of-probation announces the actual outcome, one wording per outcome, and can no longer panic — a failed write could previously have triggered the rollback it was reporting as unnecessary | v0.2.136 |
+| §17 Tuning | UPDATED | Two corrections to this manual: the default is memory-derived, not a flat 1 GiB, and the dial governs disk rather than RAM. Adds the headroom rule and a worked example | v0.2.136 |
+| §18 Developer | UPDATED | Synchronous delegate contract-write host functions removed — a breaking change for delegates that write contract state | v0.2.136 |
+
+**Revision 1.3 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1231,10 +1364,11 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:88%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:92%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:96%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:100%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:85%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:89%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:92%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:96%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:100%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1244,7 +1378,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.3 · covers Freenet v0.2.135 ·
+<p class="footer-note">Freenet User Manual rev 1.4 · covers Freenet v0.2.136 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
