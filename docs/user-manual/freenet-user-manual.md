@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.4</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.136</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-22</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.5</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.137</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-24</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -251,7 +251,7 @@ Then open `http://127.0.0.1:7509/` as usual. Three things to know:
 A ready-made `docker-compose.yml` lives in `docker/freenet-node/` in the
 source repository, alongside the full container documentation.
 
-### 2.7 Nix <span class="badge badge-new">NEW</span>
+### 2.7 Nix
 
 *New in v0.2.136.* Nix is now a **supported deployment path**, not merely a way
 to get a compiler:
@@ -292,7 +292,7 @@ alias.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
+## 3. First Run and the Dashboard
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -387,11 +387,33 @@ live while a dormant one is quietly dropped. The cap is deliberately **not
 configurable**: a tunable limit would mean the same app works on some peers and
 not others, which is precisely the non-uniformity Freenet avoids.
 
+**Delegate subscriptions now survive a restart (v0.2.137).** Until this release,
+restarting your node silently dropped every subscription a delegate held: the
+private half of an app stopped being notified of contract changes until
+something re-subscribed it. Those subscriptions are now written to disk and
+replayed at startup, so notifications come back on their own.
+
+Three details are worth knowing, because "on their own" is not the same as
+instantly:
+
+- **There is a warm-up.** The node waits roughly **15 seconds** after starting
+  before it re-establishes the first subscription — long enough to have joined
+  the ring — then works through them one at a time. A delegate that looks quiet
+  in the first few seconds after a restart is not broken.
+- **Two ceilings.** At most **4096** subscriptions are kept on disk, and at most
+  **512** are re-established *over the network* per boot. Anything past 512 is
+  still restored locally, so a contract your own node updates still notifies the
+  delegate; it simply doesn't get its network subscription back until a later
+  boot or until the app re-subscribes.
+- **Upgrading a delegate starts it over.** A new version of a delegate is a new
+  key, and subscriptions deliberately do not migrate to it. After an app updates
+  its delegate, expect that delegate to re-subscribe from scratch.
+
 <div class="page-break"></div>
 
 # Part III — Operating Your Node
 
-## 5. The Service: Day-to-Day Control
+## 5. The Service: Day-to-Day Control <span class="badge badge-upd">UPDATED</span>
 
 All service management goes through `freenet service …`. On Linux these commands
 drive systemd (user service by default; add `--system` everywhere if you
@@ -422,6 +444,12 @@ while on a laptop, for example.
 > and revert a version that was working perfectly. Deliberate stops are now
 > recognized as deliberate.
 
+> **A restart no longer costs you delegate subscriptions** (v0.2.137). A bounce
+> used to leave every delegate — the part of an app that holds your private
+> data — unsubscribed from the contracts it had been following, which is why
+> some apps needed reopening after a restart. Those subscriptions are now
+> restored from disk; §4 covers the brief warm-up and the two ceilings.
+
 ## 6. Configuration
 
 ### 6.1 Where things live (Linux)
@@ -446,7 +474,7 @@ macOS/Windows paths.
 > copies alongside your live config is safe again — but if you have been relying
 > on a differently named file being found, rename it to `config.toml`.
 
-### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
+### 6.2 Options you're most likely to touch
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -695,7 +723,7 @@ useful diagnostic.
    automatically** to the previous known-good version (§14.2). If crashes are
    unrelated to an update, capture a report (§10) and ask for help (§12).
 
-### 11.2 Port already in use / exit code 43 / dashboard unreachable <span class="badge badge-upd">UPDATED</span>
+### 11.2 Port already in use / exit code 43 / dashboard unreachable
 
 > **Restarting immediately after a stop is more reliable in v0.2.136.** The
 > check for "is another node already running?" used to be fooled by the socket
@@ -765,6 +793,39 @@ bounded by disk headroom, not just RAM (v0.2.126). If disk still grows
 unboundedly, check the data directory with `du` and file an issue — nothing is
 supposed to grow without a budget anymore.
 
+### 11.7 An app loads, but parts of it are missing <span class="badge badge-new">NEW</span>
+
+Since v0.2.137 an app asset your node cannot serve comes back as a plain **404**
+instead of a 500 carrying an operating-system error message in the page. That is
+the correct answer to give a browser, and the response is explicitly not
+cacheable (`Cache-Control: no-store`), so once the asset is available a normal
+reload picks it up rather than a stale error sticking around. The trade-off is
+that the browser can no longer tell you *why* it is missing.
+
+Two quite different causes look identical from the browser, and are separated
+only in the node's own log:
+
+1. **The asset genuinely isn't there yet** — the app's contract hasn't finished
+   synchronizing. Reload after a moment; the health check (§7) tells you whether
+   the node is actually connected.
+2. **The asset is there but unreadable** — wrong ownership or permissions on the
+   webapp cache directory, or a damaged cache. In this case, and only this case,
+   your node logs a warning naming the path:
+
+   ```bash
+   freenet service logs --err
+   # or search the whole log for the affected area
+   freenet service logs | grep -i webapp
+   ```
+
+   A permissions warning means the file exists and your node was refused it: fix
+   ownership of the data directory (§6.1) and restart. If the cache itself looks
+   damaged rather than mis-owned, `freenet service doctor` (§11.3) repairs a
+   wedged install.
+
+If no warning appears at all, treat it as case 1 and give the contract time to
+arrive.
+
 ## 12. Getting Help
 
 1. **Generate a diagnostic report first** (§10) — it answers 90% of the
@@ -781,7 +842,7 @@ supposed to grow without a budget anymore.
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
+## 13. How Auto-Update Works
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -973,7 +1034,7 @@ contract state, caches, the binary — is replaceable; the secrets are not.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
+## 17. Storage and Resource Tuning
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
@@ -1059,6 +1120,22 @@ contract-write host functions have been removed. A delegate that wrote contract
 state through them must move to the asynchronous path (the same one that carries
 the network GET/SUBSCRIBE described below). Rebuild and test any delegate that
 writes contract state before publishing against this release.
+
+**For delegate authors in v0.2.137:** a request for a delegate a node does not
+have now fails with the typed `DelegateError::Missing(key)` in network mode — the
+same error `freenet local` already returned. Previously a networked client only
+got a generic `OperationError` carrying a string, so it could not tell "this node
+doesn't have that delegate" apart from "this node failed", which is exactly the
+distinction a migration probe across predecessor delegate versions depends on.
+Match on the typed variant rather than parsing error text. Those misses are also
+no longer logged at error level, so probe traffic no longer fills the error log
+you use for triage.
+
+**Delegate subscriptions are durable as of v0.2.137**, within limits your app
+should not assume away: 4096 persisted, 512 re-established over the network per
+boot, and nothing migrated when you publish a new version of a delegate (a new
+delegate key is a new identity — re-subscribe on first run). §4 has the
+user-facing view of the same change.
 
 **New for delegate authors in v0.2.135.** V1 delegates can now issue **GET and
 SUBSCRIBE against the network**, not just against state the node already holds,
@@ -1296,14 +1373,25 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
-| **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
-| **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
+| **1.5** | 2026-09-24 | 0.2.137 | Delegate subscriptions survive a node restart (with a warm-up and two ceilings); a missing app asset answers 404 instead of a 500 that leaked an OS error, and a new §11.7 for the case only the log can explain; typed `DelegateError::Missing` for network-mode clients. |
 | **1.4** | 2026-09-22 | 0.2.136 | Nix as a supported deployment path; per-peer dashboard pages; fullscreen apps; probation announcements that can't cause the rollback they report; and two corrections to this manual's own storage-tuning claims. |
 | **1.3** | 2026-09-11 | 0.2.135 | Update-safety warnings when crash-loop rollback is not armed; deliberate stops no longer counted as crashes; exact `config.toml` honored; SELinux/user-service install fixes; delegates reach the network under a 256-subscription cap; stdlib 0.10.0. |
 | **1.2** | 2026-09-07 | 0.2.134 | Metrics export to your own OpenTelemetry collector (new §19); project telemetry endpoint moved to `telemetry.freenet.org`; corrected Matrix room; role-based gateway names; app-visible reliability fixes; credential redaction in diagnostic reports. |
+| **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
+| **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.4 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.5 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §4 Using applications | UPDATED | Delegate subscriptions survive a restart: persisted and replayed at startup, after a ~15 s warm-up, capped at 4096 stored and 512 re-established per boot, with no migration across a delegate upgrade | v0.2.137 |
+| §5 The Service | UPDATED | A restart no longer leaves delegates unsubscribed from the contracts they were following | v0.2.137 |
+| §11.7 App loads but parts are missing | NEW | A missing app asset now answers 404 with `Cache-Control: no-store` instead of a 500 carrying an OS error; the permissions/damaged-cache case is distinguishable only from the node's log warning | v0.2.137 |
+| §18 Developer | UPDATED | Typed `DelegateError::Missing(key)` for network-mode clients in place of a stringly generic `OperationError`; missing-delegate probes no longer logged at error level | v0.2.137 |
+
+**Revision 1.4 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1364,11 +1452,12 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:85%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:89%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:92%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:96%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:100%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:82%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:85%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:89%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:93%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:96%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:100%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1378,7 +1467,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.4 · covers Freenet v0.2.136 ·
+<p class="footer-note">Freenet User Manual rev 1.5 · covers Freenet v0.2.137 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
