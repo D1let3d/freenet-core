@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.5</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.137</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-24</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.6</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.138</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-25</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -292,7 +292,7 @@ alias.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard
+## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -316,6 +316,11 @@ are than assuming nothing. A negative score is labelled in words —
 *"worse than assuming nothing"* — rather than left as a bare `-0.43` for you to
 interpret, which is the right call for a number most people meet for the first
 time on that page.
+
+Since v0.2.138 the dashboard also carries an **Apps and permissions** card,
+linking to `/permission/apps` — the page listing every permission you have
+granted an app, with a button to revoke any of them. §4.1 explains what those
+permissions are and when you will be asked for one.
 
 If you skipped the service, you can run a node in the foreground:
 
@@ -409,11 +414,61 @@ instantly:
   key, and subscriptions deliberately do not migrate to it. After an app updates
   its delegate, expect that delegate to re-subscribe from scratch.
 
+**A stranded-transfer bug is fixed (v0.2.138).** When a large transfer's data
+fragments overtook the message describing them — ordinary network reordering —
+the two halves could fail to find each other and the transfer was left hanging.
+Both orderings are now handled, so a large upload or download no longer strands
+itself on a reordered network. This is the same family as the misreporting fixes
+above: nothing you did wrong, and nothing you could have seen from the app.
+
+### 4.1 When an app asks to run in the background <span class="badge badge-new">NEW</span>
+
+Normally the private half of an app — its delegate — runs only while the app is
+open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
+shop that answers a buyer while the seller is away, for instance. This is the
+first thing your node asks your permission for, so it is worth understanding
+before you meet the prompt.
+
+**The prompt comes from Freenet, not from the app.** The node writes it and the
+node shows it. An app cannot draw its own version, phrase it more persuasively,
+or answer it on your behalf. If you are being asked whether something may run in
+the background, that question came from your own node.
+
+**You are asked once, and the answer belongs to the *app*, not to the delegate.**
+That distinction is what makes "once" mean once:
+
+- Choosing **Allow** stores the grant. The app shipping a new version of its
+  delegate — a routine event — does **not** ask you again.
+- What *does* ask again is the app itself being re-keyed, and that also changes
+  the app's URL, so a repeat prompt is a visible signal rather than a silent one.
+- Choosing **Not now** is remembered too: the app cannot ask again for **seven
+  days**. No app can wear you down by asking repeatedly.
+- Dismissing the prompt without answering stores nothing, so you will be asked
+  next time. Ignoring is not consent — and it is not refusal either.
+
+**Reviewing and revoking.** `/permission/apps`, linked from the dashboard's
+*Apps and permissions* card, lists every grant and revokes any of them. Nothing
+is permanent because you clicked once.
+
+**Background work is budgeted.** A delegate running unprompted is limited in how
+long it may run and how many contract operations it may perform, per delegate and
+across the node as a whole. One that exhausts its budget is refused with a
+"retry later" rather than being left to spin — so granting this permission
+cannot hand one app your whole node.
+
+> **What this permission does not protect you from.** It governs *apps*. It is
+> not a barrier against other software already running on your computer: any
+> local program that can open a connection to your node can drive a delegate
+> regardless of these grants, and could do so before this feature existed. Read
+> the permissions page as a record of what you have allowed *apps* to do, not as
+> a defense against your own machine. Protecting the machine itself remains the
+> machine's own job.
+
 <div class="page-break"></div>
 
 # Part III — Operating Your Node
 
-## 5. The Service: Day-to-Day Control <span class="badge badge-upd">UPDATED</span>
+## 5. The Service: Day-to-Day Control
 
 All service management goes through `freenet service …`. On Linux these commands
 drive systemd (user service by default; add `--system` everywhere if you
@@ -793,7 +848,7 @@ bounded by disk headroom, not just RAM (v0.2.126). If disk still grows
 unboundedly, check the data directory with `du` and file an issue — nothing is
 supposed to grow without a budget anymore.
 
-### 11.7 An app loads, but parts of it are missing <span class="badge badge-new">NEW</span>
+### 11.7 An app loads, but parts of it are missing
 
 Since v0.2.137 an app asset your node cannot serve comes back as a plain **404**
 instead of a 500 carrying an operating-system error message in the page. That is
@@ -1137,6 +1192,28 @@ boot, and nothing migrated when you publish a new version of a delegate (a new
 delegate key is a new identity — re-subscribe on first run). §4 has the
 user-facing view of the same change.
 
+**New for delegate authors in v0.2.138: manifests and capabilities.** A delegate
+that must run with no app tab open declares it in a manifest compiled into the
+WASM:
+
+```rust
+#[delegate(manifest(lifecycle = [..], capabilities = [Background]))]
+```
+
+The node reads the manifest at registration, asks the user once *in its own
+prompt* — you cannot author or style it — and stores the answer against the
+**app**, not against your delegate, so shipping a new delegate build does not
+re-prompt your users. Your delegate then receives `LifecycleEvent::Installed`
+once per node and `LifecycleEvent::NodeStarted` after each start, but only if
+your manifest lists that kind *and* the app holds the grant. Design for the grant
+being absent: that is the default, and a refusal lasts a week.
+
+Three limits to build against: one delegate may be bound to at most **8 apps**
+(background delivery is enabled if any bound app holds the grant); unprompted
+runs are budgeted for both time and contract operations, per delegate and
+node-wide, and are refused with a retry-later once spent; and a delegate whose
+registered parameters exceed **64 KiB** receives no lifecycle events at all.
+
 **New for delegate authors in v0.2.135.** V1 delegates can now issue **GET and
 SUBSCRIBE against the network**, not just against state the node already holds,
 and V2 delegate contract writes propagate to the network. Two constraints to
@@ -1373,6 +1450,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.6** | 2026-09-25 | 0.2.138 | App permissions: a delegate may ask to run with no tab open, the node (not the app) asks once, the answer belongs to the app, "Not now" holds for a week, and `/permission/apps` revokes; delegate manifests for authors; a stranded-transfer race fixed. |
 | **1.5** | 2026-09-24 | 0.2.137 | Delegate subscriptions survive a node restart (with a warm-up and two ceilings); a missing app asset answers 404 instead of a 500 that leaked an OS error, and a new §11.7 for the case only the log can explain; typed `DelegateError::Missing` for network-mode clients. |
 | **1.4** | 2026-09-22 | 0.2.136 | Nix as a supported deployment path; per-peer dashboard pages; fullscreen apps; probation announcements that can't cause the rollback they report; and two corrections to this manual's own storage-tuning claims. |
 | **1.3** | 2026-09-11 | 0.2.135 | Update-safety warnings when crash-loop rollback is not armed; deliberate stops no longer counted as crashes; exact `config.toml` honored; SELinux/user-service install fixes; delegates reach the network under a 256-subscription cap; stdlib 0.10.0. |
@@ -1380,8 +1458,18 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.5 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.6 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard | UPDATED | New *Apps and permissions* card linking to `/permission/apps`, where grants are listed and revoked | v0.2.138 |
+| §4 Using applications | UPDATED | A reordering race that stranded large transfers is fixed — both fragment/metadata orderings now handled | v0.2.138 |
+| §4.1 Background permission | NEW | The node-authored consent-once prompt: granted to the app rather than the delegate, so a delegate update does not re-ask; "Not now" holds for seven days; a dismissal stores nothing; budgets bound unprompted runs; and an explicit statement of what the permission does *not* defend against | v0.2.138 |
+| §18 Developer | UPDATED | Delegate manifests (`#[delegate(manifest(...))]`), the `Background` capability, lifecycle events, and the three limits to build against: 8 apps per delegate, budgeted unprompted runs, 64 KiB parameter ceiling for lifecycle delivery | v0.2.138 |
+
+**Revision 1.5 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1452,12 +1540,13 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:82%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:85%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:89%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:93%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:96%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:100%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:80%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:83%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:87%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:90%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:93%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:96%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:100%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1467,7 +1556,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.5 · covers Freenet v0.2.137 ·
+<p class="footer-note">Freenet User Manual rev 1.6 · covers Freenet v0.2.138 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
