@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.6</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.138</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-25</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.7</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.139</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-28</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -320,7 +320,8 @@ time on that page.
 Since v0.2.138 the dashboard also carries an **Apps and permissions** card,
 linking to `/permission/apps` — the page listing every permission you have
 granted an app, with a button to revoke any of them. §4.1 explains what those
-permissions are and when you will be asked for one.
+permissions are and when you will be asked for one. (That page had no way back
+to the dashboard when it shipped; v0.2.139 adds the link.)
 
 If you skipped the service, you can run a node in the foreground:
 
@@ -336,7 +337,7 @@ The first startup fetches the current **gateway list** from
 joins the network. Within a short time the node acquires peer connections of its
 own and no longer depends on the gateway.
 
-## 4. Using Freenet Applications <span class="badge badge-upd">UPDATED</span>
+## 4. Using Freenet Applications
 
 Freenet apps are ordinary web apps loaded through your node. The flagship
 application today is **River** (<https://freenet.org/>) — decentralized group
@@ -421,7 +422,7 @@ Both orderings are now handled, so a large upload or download no longer strands
 itself on a reordered network. This is the same family as the misreporting fixes
 above: nothing you did wrong, and nothing you could have seen from the app.
 
-### 4.1 When an app asks to run in the background <span class="badge badge-new">NEW</span>
+### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -449,6 +450,31 @@ That distinction is what makes "once" mean once:
 **Reviewing and revoking.** `/permission/apps`, linked from the dashboard's
 *Apps and permissions* card, lists every grant and revokes any of them. Nothing
 is permanent because you clicked once.
+
+**From v0.2.139 a granted app can also run on a schedule.** Until this release
+the permission meant two specific moments: once when the app was installed, and
+once each time your node started. A delegate can now also declare *periodic
+wake-ups* — "run me every N seconds" — and the node fires them.
+
+The reason this does not need a second question from your node is worth being
+precise about, because it is the whole safety argument:
+
+- It is the **same grant**, re-checked at **every** fire. Revoking on
+  `/permission/apps` stops the scheduled runs too, immediately and without a
+  separate control to find.
+- It is the **same budget** described below. Scheduled runs are not an extra
+  allowance on top of the background one; they draw from it.
+- The schedule is **bounded by the node, not by the app**: no faster than once
+  a minute, no slower than weekly, and at most **four** schedules per delegate.
+  Only one run per schedule can be pending at a time, so a delegate cannot pile
+  up missed fires and then stampede.
+- If your node is busy, or the delegate has spent its budget, a fire is
+  **deferred rather than run** — and a fire deferred repeatedly is dropped
+  instead of queued forever.
+
+Nothing about a pending fire survives a restart; schedules are simply re-armed
+when the node starts. So a wake-up missed while your machine was off does not
+arrive in a burst when you turn it back on.
 
 **Background work is budgeted.** A delegate running unprompted is limited in how
 long it may run and how many contract operations it may perform, per delegate and
@@ -1214,6 +1240,30 @@ runs are budgeted for both time and contract operations, per delegate and
 node-wide, and are refused with a retry-later once spent; and a delegate whose
 registered parameters exceed **64 KiB** receives no lifecycle events at all.
 
+**Periodic wake-ups, v0.2.139.** Add schedules to the same manifest and receive
+`InboundDelegateMsg::WakeupFired { tag }`:
+
+```rust
+#[delegate(manifest(capabilities = [Background], wakeups = [sync = 3600]))]
+```
+
+They are declared in the manifest rather than requested at run time on purpose,
+and the reason is a compatibility one worth copying: a node that predates the
+feature skips an unknown JSON field and honours the rest of your manifest,
+whereas a new host import would have failed instantiation and a new outbound
+message variant would have failed decoding of the entire outbound batch. One
+delegate build therefore works on old and new nodes alike.
+
+Build against the bounds: the interval is clamped to **60 s – 7 days**, tags are
+**1–64 bytes**, and a delegate gets at most **4** schedules. Only one fire per
+`(delegate, tag)` may be pending. Each fire re-checks that your manifest still
+lists the tag *and* that a bound app still holds the Background grant, so treat
+revocation as something that can happen between any two fires. Fires are metered
+by the same duty budget as lifecycle runs, and a fire that cannot run — parked
+delegate, spent budget — is deferred and then given up rather than queued.
+Nothing about a pending fire is persisted; schedules are re-armed at node start,
+after a registration, and after a grant. Requires `freenet-stdlib` 0.12.1.
+
 **New for delegate authors in v0.2.135.** V1 delegates can now issue **GET and
 SUBSCRIBE against the network**, not just against state the node already holds,
 and V2 delegate contract writes propagate to the network. Two constraints to
@@ -1450,6 +1500,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.7** | 2026-09-28 | 0.2.139 | Periodic wake-ups: a granted app can now also run on a schedule, under the same permission re-checked at every fire and the same budget, bounded by the node at 60 s–7 days and four schedules per delegate; the permissions page gains a way back to the dashboard. |
 | **1.6** | 2026-09-25 | 0.2.138 | App permissions: a delegate may ask to run with no tab open, the node (not the app) asks once, the answer belongs to the app, "Not now" holds for a week, and `/permission/apps` revokes; delegate manifests for authors; a stranded-transfer race fixed. |
 | **1.5** | 2026-09-24 | 0.2.137 | Delegate subscriptions survive a node restart (with a warm-up and two ceilings); a missing app asset answers 404 instead of a 500 that leaked an OS error, and a new §11.7 for the case only the log can explain; typed `DelegateError::Missing` for network-mode clients. |
 | **1.4** | 2026-09-22 | 0.2.136 | Nix as a supported deployment path; per-peer dashboard pages; fullscreen apps; probation announcements that can't cause the rollback they report; and two corrections to this manual's own storage-tuning claims. |
@@ -1458,8 +1509,17 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.6 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.7 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard | UPDATED | The Apps and permissions page gains a link back to the dashboard | v0.2.139 |
+| §4.1 Background permission | UPDATED | A granted app may also run on a periodic schedule — same grant re-checked at every fire, same budget, node-imposed bounds (60 s–7 days, four schedules per delegate, one pending fire each), deferral rather than backlog, and nothing carried across a restart | v0.2.139 |
+| §18 Developer | UPDATED | `wakeups = [tag = seconds]` in the delegate manifest and `WakeupFired`; why it is declared rather than requested (forward compatibility with older nodes); the bounds to build against; `freenet-stdlib` 0.12.1 | v0.2.139 |
+
+**Revision 1.6 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1540,13 +1600,14 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:80%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:83%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:87%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:90%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:93%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:96%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:100%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:79%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:82%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:85%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:88%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:91%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:94%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:97%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:100%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1556,7 +1617,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.6 · covers Freenet v0.2.138 ·
+<p class="footer-note">Freenet User Manual rev 1.7 · covers Freenet v0.2.139 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
