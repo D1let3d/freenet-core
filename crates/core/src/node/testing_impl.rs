@@ -434,7 +434,7 @@ impl ScheduledOperation {
 }
 
 /// Packet-delivery decision consulted by every `SimulationSocket` (via the
-/// global delivery callback installed by `run_controlled_simulation` and
+/// per-network delivery callback installed by `run_controlled_simulation` and
 /// `run_simulation_direct`) so an injected node crash or partition actually
 /// drops packets instead of being a silent no-op.
 ///
@@ -525,6 +525,13 @@ pub struct ControlledSimulationResult {
     /// `crate::ring::topology_registry::record_summarize_wasm_call` (#4440, spec
     /// step 8).
     pub summarize_wasm_calls: HashMap<std::net::SocketAddr, u64>,
+    /// Zombie-transport sweep observations, keyed by (sweeping node address,
+    /// remote transport address), captured before the registry is cleared.
+    /// See `crate::ring::topology_registry::ZombieSweepObservation` (#5654).
+    pub zombie_sweep_observations: HashMap<
+        (std::net::SocketAddr, std::net::SocketAddr),
+        crate::ring::topology_registry::ZombieSweepObservation,
+    >,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -541,6 +548,42 @@ impl ControlledSimulationResult {
         self.node_rings
             .get(label)
             .is_some_and(|ring| ring.is_hosting_contract(key))
+    }
+
+    /// `(failures, successes)` route events ingested by `label`'s router over
+    /// the whole run, or `None` if the node never published its Ring (#5657).
+    /// Cumulative, unlike the router's 500-event estimator windows.
+    pub fn node_route_outcome_totals(&self, label: &NodeLabel) -> Option<(u64, u64)> {
+        self.node_rings.get(label).map(|ring| {
+            let totals = ring.router.read().outcome_totals();
+            (totals.failures, totals.successes)
+        })
+    }
+
+    /// `(not_found, timeout, send_failure)` route failure labels `label`'s
+    /// node fed its router, by cause, or `None` if the node never published
+    /// its Ring (#5657).
+    pub fn node_route_failure_causes(&self, label: &NodeLabel) -> Option<(u64, u64, u64)> {
+        self.node_rings
+            .get(label)
+            .map(|ring| ring.route_failure_cause_counts())
+    }
+
+    /// Ambiguous NotFounds `label`'s node dropped untrained, or `None` if the
+    /// node never published its Ring (#5657).
+    pub fn node_untrained_not_founds(&self, label: &NodeLabel) -> Option<u64> {
+        self.node_rings
+            .get(label)
+            .map(|ring| ring.untrained_not_found_count())
+    }
+
+    /// `(failures, successes)` route events summed over every node's router
+    /// (#5657). See [`Self::node_route_outcome_totals`].
+    pub fn aggregate_route_outcome_totals(&self) -> (u64, u64) {
+        self.node_rings
+            .values()
+            .map(|ring| ring.router.read().outcome_totals())
+            .fold((0, 0), |(f, s), t| (f + t.failures, s + t.successes))
     }
 
     /// The protocol version `label`'s node had recorded for the peer at `addr`
@@ -662,6 +705,33 @@ impl ControlledSimulationResult {
             .unwrap_or_default()
     }
 
+    /// Whether `label`'s node held a ring connection to `other`'s address at
+    /// the end of the run. `false` if either node is unknown or never
+    /// published its Ring.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn node_is_connected_to(&self, label: &NodeLabel, other: &NodeLabel) -> bool {
+        let Some(addr) = self
+            .node_rings
+            .get(other)
+            .and_then(|ring| ring.connection_manager.get_own_addr())
+        else {
+            return false;
+        };
+        self.node_rings
+            .get(label)
+            .is_some_and(|ring| ring.connection_manager.get_peer_by_addr(addr).is_some())
+    }
+
+    /// Timeout route-failure labels `label`'s node recorded as the originator
+    /// of an operation, excluding those it recorded while relaying other
+    /// nodes' operations. `None` if the node never published its Ring (#5660).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn node_originator_route_timeouts(&self, label: &NodeLabel) -> Option<u64> {
+        self.node_rings
+            .get(label)
+            .map(|ring| ring.originator_route_timeout_count())
+    }
+
     /// Whether `label`'s node was actively receiving updates for `key` (has a
     /// live network/client subscription keeping the copy fresh) at the end of the
     /// run. Returns `false` if the node never published its Ring. The serve-DURING
@@ -742,6 +812,21 @@ impl ControlledSimulationResult {
     /// every-hop load and the #4440 storm has re-armed.
     pub fn total_summarize_wasm_calls(&self) -> u64 {
         self.summarize_wasm_calls.values().copied().sum()
+    }
+
+    /// How many times `sweeper`'s zombie sweep found the transport from `remote`
+    /// never promoted to its ring and old enough to be a zombie by age, and how
+    /// many of those times it kept the transport because `remote` had sent a
+    /// request recently. `(0, 0)` if never. See #5654.
+    pub fn zombie_sweep_counts(
+        &self,
+        sweeper: std::net::SocketAddr,
+        remote: std::net::SocketAddr,
+    ) -> (u64, u64) {
+        self.zombie_sweep_observations
+            .get(&(sweeper, remote))
+            .map(|o| (o.past_age_threshold, o.kept_for_link_use))
+            .unwrap_or((0, 0))
     }
 
     /// The single peer's peak WASM-summarize count — the worst per-node
@@ -1758,6 +1843,24 @@ impl SimNetwork {
         seed = seed.wrapping_mul(0xc4ceb9fe1a85ec53);
         seed ^= seed >> 33;
         seed
+    }
+
+    /// Makes this network's injected crashes and partitions REAL packet
+    /// drops: installs the fault-injection delivery callback for this network
+    /// only, and opts its fault injector in via `enforce_fault_drops`.
+    ///
+    /// The callback is keyed by this network's name and removed by
+    /// `SimNetwork::Drop`, so another simulation in the same process can
+    /// neither replace it nor clear it (#5673).
+    #[cfg(any(test, feature = "testing"))]
+    fn enable_fault_drop_enforcement(&self) {
+        crate::transport::in_memory_socket::set_packet_delivery_callback(
+            &self.name,
+            Some(Arc::new(fault_injection_delivery_decision)),
+        );
+        if let Some(injector) = crate::node::network_bridge::get_fault_injector(&self.name) {
+            injector.lock().unwrap().enforce_fault_drops = true;
+        }
     }
 }
 
@@ -4724,21 +4827,11 @@ impl SimNetwork {
         // Save network name for topology retrieval after simulation
         let network_name = self.name.clone();
 
-        // Make `SimOperation::CrashNode` a REAL crash: install the global
-        // packet-delivery callback that consults each network's fault injector
-        // and DROPS every packet to/from a crashed node, then opt THIS network
-        // in via `enforce_fault_drops`. The callback is per-network aware (keyed
-        // on the network name it is handed) and inert for any network that did
-        // not opt in, so the direct-runner churn driver's crash semantics stay
-        // unchanged. `SimNetwork::Drop` clears the callback. Without this, a
-        // "crashed" node kept exchanging packets and piece-F crash tests were
+        // Make `SimOperation::CrashNode` a REAL crash: DROP every packet
+        // to/from a crashed node of this network. Without this, a "crashed"
+        // node kept exchanging packets and piece-F crash tests were
         // false-green (#4642 piece F).
-        crate::transport::in_memory_socket::set_packet_delivery_callback(Some(
-            std::sync::Arc::new(fault_injection_delivery_decision),
-        ));
-        if let Some(injector) = crate::node::network_bridge::get_fault_injector(&network_name) {
-            injector.lock().unwrap().enforce_fault_drops = true;
-        }
+        self.enable_fault_drop_enforcement();
 
         // Build Turmoil simulation with seeded RNG for deterministic execution
         let mut sim = turmoil::Builder::new()
@@ -5373,6 +5466,8 @@ impl SimNetwork {
         // every-hop summarize-storm falsifier reads these after the run returns.
         let summarize_wasm_calls =
             crate::ring::topology_registry::get_all_summarize_wasm_calls(&network_name);
+        let zombie_sweep_observations =
+            crate::ring::topology_registry::get_all_zombie_sweep_observations(&network_name);
 
         // Capture the crash-drop count BEFORE self drops (Drop clears the fault
         // injector via `set_fault_injector(None)`). `> 0` proves a scripted
@@ -5397,6 +5492,7 @@ impl SimNetwork {
             renewal_metrics,
             crash_packets_dropped,
             summarize_wasm_calls,
+            zombie_sweep_observations,
         }
     }
 
@@ -5691,8 +5787,8 @@ impl SimNetwork {
         // Make direct-runner ChurnConfig crashes REAL packet drops (#4694).
         //
         // The chaos driver below marks nodes crashed in this network's fault
-        // injector, but a crash only drops packets if the global packet-delivery
-        // callback is installed AND this network opted in via
+        // injector, but a crash only drops packets if this network's
+        // packet-delivery callback is installed AND it opted in via
         // `enforce_fault_drops`. Neither happened on the direct runner, so churn
         // faults were inert: a "crashed" node kept exchanging packets and every
         // near-K churn / partition validation on this runner was false-green
@@ -5702,14 +5798,8 @@ impl SimNetwork {
         // byte-for-byte unchanged (the callback is inert unless a node is
         // actually crashed/partitioned, but gating keeps the change surgical and
         // makes the wiring impossible to miss when churn IS configured).
-        // `SimNetwork::Drop` clears the global callback.
         if self.churn_config.is_some() {
-            crate::transport::in_memory_socket::set_packet_delivery_callback(Some(
-                std::sync::Arc::new(fault_injection_delivery_decision),
-            ));
-            if let Some(injector) = crate::node::network_bridge::get_fault_injector(&self.name) {
-                injector.lock().unwrap().enforce_fault_drops = true;
-            }
+            self.enable_fault_drop_enforcement();
         }
 
         // Single-threaded runtime with paused time for deterministic execution
@@ -6478,7 +6568,7 @@ impl Drop for SimNetwork {
         use crate::node::network_bridge::set_fault_injector;
         use crate::ring::topology_registry::{
             clear_current_network_name, clear_renewal_metrics, clear_summarize_metrics,
-            clear_topology_snapshots,
+            clear_topology_snapshots, clear_zombie_sweep_observations,
         };
         use crate::transport::in_memory_socket::{
             clear_network_address_mappings, remove_network_socket_registry,
@@ -6491,13 +6581,15 @@ impl Drop for SimNetwork {
         clear_topology_snapshots(&self.name);
         clear_renewal_metrics(&self.name);
         clear_summarize_metrics(&self.name);
+        clear_zombie_sweep_observations(&self.name);
         remove_network_socket_registry(&self.name);
         clear_network_address_mappings(&self.name);
 
-        // Clear global callbacks to prevent stale references between
-        // sequential simulation runs (e.g., determinism tests).
-        set_packet_delivery_callback(None);
-        set_queue_packet_callback(None);
+        // Remove only THIS network's callbacks. Clearing a process-global slot
+        // here turned off crash enforcement for every other simulation still
+        // running in the same process (#5673).
+        set_packet_delivery_callback(&self.name, None);
+        set_queue_packet_callback(&self.name, None);
 
         // Thread-local cleanup
         clear_current_network_name();
@@ -6733,6 +6825,93 @@ use crate::contract::OperationMode;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for #5673: one simulation finishing (dropping its
+    /// `SimNetwork`) must not switch off crash enforcement for another
+    /// simulation still running in the same process.
+    ///
+    /// Network B stays alive on this thread with a crashed node. Network A is
+    /// built, enabled and dropped on a second thread, which is what happens
+    /// when plain `cargo test` runs two simulations as threads of one process
+    /// and A finishes first. B's crashed node must still drop packets
+    /// afterwards. Before the fix the callback was one process-global slot, so
+    /// A's `Drop` cleared it and B's "crashed" node was delivered to again.
+    ///
+    /// Scope: this checks the per-network callback map, calling
+    /// `check_packet_delivery` with B's name exactly as B's sockets do. It does
+    /// not cover how a socket learns its network name from its address at bind
+    /// time (`ADDRESS_NETWORKS`), which has its own cross-network hazard: #5676.
+    #[test]
+    fn dropping_one_network_keeps_crash_enforcement_of_another() {
+        use crate::node::network_bridge::get_fault_injector;
+        use crate::transport::in_memory_socket::{
+            PacketDeliveryDecision, check_packet_delivery, has_packet_delivery_callback,
+        };
+
+        const NET_A: &str = "crash-enforcement-finishes-first-5673";
+        const NET_B: &str = "crash-enforcement-still-running-5673";
+
+        let build = move |name: &'static str, seed: u64| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(SimNetwork::new(name, 1, 2, 7, 3, 6, 2, seed))
+        };
+        let is_drop = |d: PacketDeliveryDecision| matches!(d, PacketDeliveryDecision::Drop);
+
+        let b = build(NET_B, 0x5673_000B);
+        b.enable_fault_drop_enforcement();
+        let mut addrs: Vec<SocketAddr> = b.all_node_addresses().values().copied().collect();
+        addrs.sort();
+        let (crashed, live_x, live_y) = (addrs[0], addrs[1], addrs[2]);
+        get_fault_injector(NET_B)
+            .expect("SimNetwork::new registers a fault injector")
+            .lock()
+            .unwrap()
+            .config
+            .crash_node(crashed);
+        assert!(
+            is_drop(check_packet_delivery(NET_B, live_x, crashed)),
+            "precondition: B's crashed node drops packets before A exists"
+        );
+
+        std::thread::spawn(move || {
+            let a = build(NET_A, 0x5673_000A);
+            a.enable_fault_drop_enforcement();
+            assert!(has_packet_delivery_callback(NET_A));
+            drop(a);
+        })
+        .join()
+        .expect("network A's thread panicked");
+
+        assert!(
+            !has_packet_delivery_callback(NET_A),
+            "dropping A must remove A's own callback"
+        );
+        assert!(
+            has_packet_delivery_callback(NET_B),
+            "dropping A must not remove B's callback"
+        );
+        assert!(
+            is_drop(check_packet_delivery(NET_B, live_x, crashed)),
+            "after A dropped, packets TO B's crashed node must still be dropped"
+        );
+        assert!(
+            is_drop(check_packet_delivery(NET_B, crashed, live_x)),
+            "after A dropped, packets FROM B's crashed node must still be dropped"
+        );
+        assert!(
+            !is_drop(check_packet_delivery(NET_B, live_x, live_y)),
+            "B's healthy nodes must still reach each other"
+        );
+
+        drop(b);
+        assert!(
+            !has_packet_delivery_callback(NET_B),
+            "dropping B must remove B's own callback"
+        );
+    }
 
     /// Unit test for the fault-injection delivery decision (#4694 / #4642 piece F).
     ///

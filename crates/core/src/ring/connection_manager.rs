@@ -325,6 +325,13 @@ impl PeerHealthTracker {
         Self::default()
     }
 
+    /// `(successes, failures)` recorded for the peer at `addr`, if tracked.
+    pub fn counts(&self, addr: &SocketAddr) -> Option<(u64, u64)> {
+        self.stats
+            .get(addr)
+            .map(|stats| (stats.successes, stats.failures))
+    }
+
     /// Initialize health tracking for a newly added peer.
     pub fn init_peer(&mut self, addr: SocketAddr) {
         self.stats.insert(
@@ -1860,6 +1867,14 @@ impl ConnectionManager {
         );
     }
 
+    /// Outbound requests the topology manager recorded for `peer`. Test-only.
+    #[cfg(test)]
+    pub(crate) fn outbound_request_count_for_test(&self, peer: &PeerKeyLocation) -> usize {
+        self.topology_manager
+            .read()
+            .outbound_request_count_for_test(peer)
+    }
+
     /// Set only the local `own_addr`, WITHOUT mirroring to the process-global
     /// `network_status::external_address`.
     ///
@@ -2261,6 +2276,36 @@ impl ConnectionManager {
         Some(loc)
     }
 
+    /// Test-only: push a raw [`Connection`] straight into
+    /// `connections_by_location`, bypassing [`Self::add_connection`]'s
+    /// addr-keyed bookkeeping.
+    ///
+    /// This is the ONLY way to stage an ADDRESSLESS ([`PeerAddr::Unknown`])
+    /// connection, and that is precisely because production cannot: every
+    /// other write to `connections_by_location` stores a known addr
+    /// (`add_connection` and `update_peer_identity` both take a
+    /// `SocketAddr`; `prune_connection` only removes), and the getter hands
+    /// back a clone so no caller can mutate a stored entry back to
+    /// `Unknown`. `Ring::k_closest_potentially_hosting` nonetheless carries
+    /// an addressless-candidate branch, and the GET retry driver a matching
+    /// `GetExhaustionReason::AddresslessCandidate`, as defence-in-depth. This
+    /// helper exists so those can be tested against real behaviour rather
+    /// than source text — it manufactures a state the rest of the system is
+    /// supposed to make impossible, so DO NOT read its existence as evidence
+    /// that the state occurs.
+    ///
+    /// Deliberately skips the capacity cap, `location_for_peer`, readiness
+    /// and reservation bookkeeping — it is a fixture, not a substitute for
+    /// `add_connection`.
+    #[cfg(test)]
+    pub(crate) fn insert_raw_connection_for_test(&self, loc: Location, peer: PeerKeyLocation) {
+        self.connections_by_location
+            .write()
+            .entry(loc)
+            .or_default()
+            .push(Connection::new(peer));
+    }
+
     pub(crate) fn connection_count(&self) -> usize {
         // Count only established connections tracked by location buckets.
         self.connections_by_location
@@ -2455,6 +2500,7 @@ impl ConnectionManager {
     }
 
     /// Route an op to the most optimal target, returning telemetry about the decision.
+    #[cfg(test)]
     pub fn routing_with_telemetry(
         &self,
         target: Location,
@@ -2465,16 +2511,31 @@ impl ConnectionManager {
         Option<PeerKeyLocation>,
         Option<crate::router::RoutingDecisionInfo>,
     ) {
+        self.routing_with(target, requesting, skip_list, |candidates| {
+            let (selected, decision) =
+                router.select_k_best_peers_with_telemetry(candidates.iter(), target, 1);
+            (selected.into_iter().next().cloned(), Some(decision))
+        })
+        .unwrap_or((None, None))
+    }
+
+    /// The readiness-gated routing candidates for `target`, handed to `select`
+    /// unless there are none. The single candidate-gathering path for
+    /// ring-selected routing: `Ring::closest_potentially_hosting` selects (and
+    /// records the decision) inside `select`, and the routing unit tests reach
+    /// the same code through `routing_with_telemetry`.
+    pub fn routing_with<R>(
+        &self,
+        target: Location,
+        requesting: Option<SocketAddr>,
+        skip_list: impl Contains<SocketAddr>,
+        select: impl FnOnce(&[PeerKeyLocation]) -> R,
+    ) -> Option<R> {
         let candidates = self.routing_candidates(target, requesting, skip_list, true);
-
         if candidates.is_empty() {
-            return (None, None);
+            return None;
         }
-
-        let (selected, decision) =
-            router.select_k_best_peers_with_telemetry(candidates.iter(), target, 1);
-        let peer = selected.into_iter().next().cloned();
-        (peer, Some(decision))
+        Some(select(&candidates))
     }
 
     /// Gather routing candidates after applying skip/transient filters.

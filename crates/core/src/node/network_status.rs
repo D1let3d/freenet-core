@@ -6,8 +6,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Instant;
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use crate::ring::reconcile::ReconcileActionDivergence;
 use crate::ring::{PeerKeyLocation, SubscribedContractSnapshot};
@@ -48,14 +48,16 @@ pub type RingStatsProvider = Arc<dyn Fn() -> RingStatsSnapshot + Send + Sync + '
 /// `Ring::contract_ban_list` directly — no mirrored counter to rot.
 pub type BanListProvider = Arc<dyn Fn() -> BanListSnapshot + Send + Sync + 'static>;
 
-/// Provider for the demand-driven hosting snapshot (piece A, #4642). Same
-/// pattern as the other providers: registered at node startup, replaceable
-/// for multi-node test harnesses, read by `get_snapshot` on every dashboard
+/// Provider for the demand-driven hosting snapshot (#4642). Same pattern as
+/// the other providers: registered at node startup, replaceable for
+/// multi-node test harnesses, read by `get_snapshot` on every dashboard
 /// request. In production the closure captures `Arc<Ring>` and calls
 /// `Ring::dashboard_hosting_snapshot()`, which reads the canonical hosting
-/// cache (Greedy-Dual keep_score + capability-relative RAM budget) — the
-/// mechanism that actually governs retention now, replacing the dormant MAD
-/// governance detector (#4296).
+/// cache.
+///
+/// Retention is governed by the subscriber-primary sweep (`victim_order`).
+/// The demoted telemetry-only estimator (`keep_score` / `predicted_demand`)
+/// is deliberately not carried on these rows.
 pub type HostingProvider = Arc<dyn Fn() -> HostingSnapshot + Send + Sync + 'static>;
 
 /// Snapshot of ring-level statistics exposed to the dashboard.
@@ -77,9 +79,29 @@ pub struct RingStatsSnapshot {
     /// may be getting dropped — operators should watch this.
     pub updates_rate_limited: u64,
     /// Total relayed UPDATEs dropped because the limiter's tracking map
-    /// was at capacity (`MAX_TRACKED_PAIRS`). A non-zero value suggests
-    /// identity churn / admission pressure, distinct from per-pair rate.
+    /// was at capacity (`MAX_TRACKED_PAIRS`) and eviction could not free
+    /// a slot. Since #4981 this means the map is full *and* contended;
+    /// ordinary saturation shows up in `updates_capacity_evicted`.
     pub updates_capacity_dropped: u64,
+    /// Total tracked `(sender, contract)` pairs evicted to admit new
+    /// ones at capacity. This is the saturation signal: a busy node
+    /// relaying for more pairs than `MAX_TRACKED_PAIRS` shows this
+    /// climbing while `updates_capacity_dropped` stays flat, and no
+    /// legitimate UPDATE is dropped for it.
+    pub updates_capacity_evicted: u64,
+    /// Total relayed UPDATEs dropped because the sending peer was over
+    /// its budget for introducing brand-new `(sender, contract)` pairs.
+    /// This is the fresh-contract-id churn signal: unlike the counters
+    /// above it never counts a peer's traffic for contracts already
+    /// being tracked, so a non-zero value really does mean one peer is
+    /// presenting unfamiliar contract ids faster than the budget allows.
+    pub updates_sender_budget_dropped: u64,
+    /// Total relayed UPDATEs admitted for a brand-new pair WITHOUT a
+    /// budget check, because the per-sender budget's own map was full.
+    /// Should be zero. A non-zero value means the budget map is
+    /// undersized for this node's peer churn, so those senders are not
+    /// actually being bounded — the safety valve is firing.
+    pub updates_sender_budget_unmetered: u64,
     /// Nearest-neighbor ring lattice completeness (the "is greedy routing's base
     /// lattice present" signal). `lattice_has_successor` / `_predecessor` are
     /// whether this peer currently HOLDS (a side is FILLED with) its
@@ -109,6 +131,108 @@ pub struct RingStatsSnapshot {
     /// lattice and the improvement rate falls toward zero.
     pub lattice_probes_issued: u64,
     pub lattice_probe_improvements: u64,
+}
+
+/// The scalars this module owns directly, for the OTel metrics callbacks.
+///
+/// Deliberately NOT [`get_snapshot`]: that builds per-peer and per-contract
+/// vectors and formats failure HTML, and the SDK has no batch-callback API in
+/// 0.32 — every observable instrument gets its own callback, so the exporter
+/// would pay that cost once per instrument per collection cycle.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OtelStatusScalars {
+    pub connection_attempts: u32,
+    pub op_stats: OperationStats,
+    /// Bootstrap-acceptance-churn counters (#4787). Sourced from the same
+    /// `NETWORK_STATUS` lock as the fields above, so it rides this existing
+    /// scalar source rather than a new provider.
+    pub bootstrap_transient_registered: u64,
+    pub bootstrap_transient_expired: u64,
+    pub bootstrap_promoted_to_ring: u64,
+    pub bootstrap_time_to_min_connections: Option<Duration>,
+    pub bootstrap_startup_rounds_connect_issued_gateway: u64,
+    pub bootstrap_startup_rounds_connect_issued_routed: u64,
+    pub bootstrap_startup_rounds_backoff_blocked: u64,
+    pub bootstrap_startup_rounds_no_target: u64,
+}
+
+/// Read this module's own scalars, or `None` before [`init`] has run.
+///
+/// One accessor per SOURCE, not one snapshot over all of them. An observable
+/// instrument that skips a collection cycle exports nothing, which reads as
+/// "not known yet", while a zero is a real datapoint —
+/// `freenet.ring.connections = 0` before the ring provider registers is
+/// indistinguishable from a node that has lost every connection. But that
+/// decision has to be per-source: an earlier version `?`-chained all of them
+/// into one snapshot, so an unregistered ring provider silently zeroed the
+/// queue metrics too, which do not depend on it at all.
+pub(crate) fn otel_status_scalars() -> Option<OtelStatusScalars> {
+    let status = NETWORK_STATUS.get()?;
+    // Poison tolerance matches the writers in this module, which already keep
+    // going field-by-field. Propagating it instead would make every metric
+    // sourced here vanish permanently, silently, for the process's life.
+    let status = status.read().unwrap_or_else(|poisoned| {
+        POISON_REPORTED.call_once(|| {
+            tracing::warn!(
+                "network status lock is poisoned; metrics continue against \
+                 the last consistent state"
+            )
+        });
+        poisoned.into_inner()
+    });
+    let b = &status.bootstrap_churn_stats;
+    Some(OtelStatusScalars {
+        connection_attempts: status.connection_attempts,
+        op_stats: status.op_stats.clone(),
+        bootstrap_transient_registered: b.transient_registered,
+        bootstrap_transient_expired: b.transient_expired,
+        bootstrap_promoted_to_ring: b.promoted_to_ring,
+        bootstrap_time_to_min_connections: b.time_to_min_connections,
+        bootstrap_startup_rounds_connect_issued_gateway: b.startup_rounds_connect_issued_gateway,
+        bootstrap_startup_rounds_connect_issued_routed: b.startup_rounds_connect_issued_routed,
+        bootstrap_startup_rounds_backoff_blocked: b.startup_rounds_backoff_blocked,
+        bootstrap_startup_rounds_no_target: b.startup_rounds_no_target,
+    })
+}
+
+/// Logged at most once — a poisoned lock stays poisoned, so this would
+/// otherwise fire on every collection cycle forever.
+static POISON_REPORTED: std::sync::Once = std::sync::Once::new();
+
+/// Live ring stats, or `None` before the provider is registered.
+pub(crate) fn otel_ring_stats() -> Option<RingStatsSnapshot> {
+    RING_STATS_PROVIDER
+        .read()
+        .as_ref()
+        .map(|provider| provider())
+}
+
+/// Hosted contracts partitioned by why they are held, or `None` before the
+/// provider is registered.
+///
+/// Its own accessor, read by exactly the two gauges that need it: this is an
+/// O(hosted) walk under the hosting-cache read lock, and folding it into a
+/// shared snapshot ran it once per observable callback — eighteen times a
+/// cycle to serve two of them.
+pub(crate) fn otel_hosting_reasons() -> Option<crate::ring::HostingReasonStats> {
+    HOSTING_REASON_PROVIDER
+        .read()
+        .as_ref()
+        .map(|provider| provider())
+}
+
+/// Source of the per-reason hosted-contract breakdown
+/// (`Ring::hosted_by_reason`). OTel-only; see [`otel_hosting_reasons`].
+pub type HostingReasonProvider =
+    Arc<dyn Fn() -> crate::ring::HostingReasonStats + Send + Sync + 'static>;
+
+static HOSTING_REASON_PROVIDER: parking_lot::RwLock<Option<HostingReasonProvider>> =
+    parking_lot::RwLock::new(None);
+
+/// Register the hosting-reason data source. Replaces any previously-registered
+/// provider.
+pub fn set_hosting_reason_provider(provider: HostingReasonProvider) {
+    *HOSTING_REASON_PROVIDER.write() = Some(provider);
 }
 
 static GOVERNANCE_PROVIDER: parking_lot::RwLock<Option<GovernanceProvider>> =
@@ -247,6 +371,156 @@ pub struct NetworkStatus {
     pub reconcile_shadow_inbound_unsubscribe: ReconcileShadowStats,
     pub reconcile_shadow_connection_drop: ReconcileShadowStats,
     pub reconcile_shadow_host_formation: ReconcileShadowStats,
+    /// Bootstrap-acceptance-churn counters (#4787). See [`BootstrapChurnStats`].
+    pub bootstrap_churn_stats: BootstrapChurnStats,
+}
+
+/// Bootstrap-acceptance-churn counters (issue #4787): a restarted node's
+/// connection to a gateway lingers as transient, its tracking entry expires,
+/// and (if the onward CONNECT never promotes it) the underlying transport is
+/// later reaped as a zombie by a separate, uninstrumented sweep — cycling the
+/// joiner through repeated reconnects before it acquires real peers. These
+/// counters are the "instrumentation before a fix" step the issue calls for:
+/// they don't change acceptance behavior, only make the churn rate and the
+/// time-to-bootstrap legible in production telemetry.
+///
+/// `transient_registered` / `transient_expired` / `promoted_to_ring` are
+/// ACCEPTOR-side, monotonic lifetime totals, recorded at the four sites in
+/// `p2p_protoc/connection_lifecycle.rs` that own the transient lifecycle. A
+/// sustained high `transient_expired` : `promoted_to_ring` ratio is the churn
+/// signature reported in the issue.
+///
+/// They are still not a clean partition of `transient_registered`: the #3113
+/// recovery path (a slow CONNECT that completes after the tracking entry's
+/// TTL already expired, `handle_connect_peer`) increments BOTH
+/// `transient_expired` (the tracking entry lapsed) AND `promoted_to_ring` (it
+/// promoted anyway) for the SAME connection. So `transient_expired +
+/// promoted_to_ring` can exceed `transient_registered`, and a connection that
+/// recovers this way is indistinguishable in these counters from one that is
+/// genuinely lost and later reaped as a zombie (the zombie-reap sweep itself,
+/// `p2p_protoc.rs`'s `drop_zombie_connection`, is not instrumented here) —
+/// both increment `transient_expired` exactly once. Read the ratio as a churn
+/// signal, not a strict recovered-vs-lost accounting.
+///
+/// The remaining fields are JOINER-side, recorded by `initial_join_procedure`
+/// in `operations/connect.rs`. `time_to_min_connections` is set at most once
+/// per process (the first time `open_connections()` reaches
+/// `min_connections`), measured from [`mark_process_start`]; `None` means this
+/// node has NOT bootstrapped yet, which is a distinct state from "no data" —
+/// the exporter publishes `freenet.bootstrap.completed` as a 0/1 gauge so a
+/// permanently-stuck joiner is visible rather than absent.
+///
+/// The four `startup_rounds_*` counters partition every below-threshold
+/// iteration of the join loop by what that iteration actually DID, and stop
+/// at the process's first real bootstrap (a later transient dip below
+/// `min_connections` is ordinary post-startup churn, not startup). Splitting
+/// them is what keeps them from degrading into a process-uptime proxy: a node
+/// stuck below `min_connections` forever increments SOMETHING every ~4s no
+/// matter how the counter is shaped, so the informative quantity is which one:
+///
+/// - `connect_issued_gateway` — dialled gateways this node was not yet
+///   connected to. Ordinary bootstrap; a healthy joiner's first rounds.
+/// - `connect_issued_routed` — every gateway transport was already up and the
+///   node was still more than `gateways.len()` connections short, so CONNECTs
+///   were routed THROUGH the connected gateways toward gap locations.
+///   **This is the series that moves during the #4787 stall.** With
+///   `min_connections = 25` and the 1–3 gateways a real deployment has, a
+///   joiner whose gateway transports are up but which acquires no real peers
+///   takes this branch on every round, for the whole multi-minute stall.
+/// - `backoff_blocked` — issued nothing because every candidate gateway was
+///   in exponential backoff.
+/// - `no_target` — issued nothing for any other reason. Principally: all
+///   gateways connected AND the node is within `gateways.len()` of the
+///   threshold, so the routed-CONNECT branch above does not apply and the
+///   round deliberately waits. This is NOT the #4787 acceptance-churn
+///   signature — an earlier revision of this instrumentation documented it as
+///   such, which would have had an operator watching a series that reads flat
+///   zero for the entire stall. But do not read it as merely quiet either: a
+///   node parked at, say, 24 of 25 connections matches this condition on
+///   every round forever, so sustained growth here is its own kind of stall —
+///   a joiner that has stopped issuing anything a few connections short of
+///   the threshold.
+///
+/// ## Reading the routed counter
+///
+/// Sustained `connect_issued_routed` growth while `time_to_min_connections`
+/// stays `None` (exported as `freenet.bootstrap.completed = 0`) identifies **a
+/// joiner that never bootstrapped**. That is NECESSARY for the #4787 stall but
+/// not SUFFICIENT, and the difference matters operationally: a network with
+/// fewer than `min_connections` reachable peers, a node behind restrictive
+/// NAT, and a node whose peers keep refusing for capacity all match the pair
+/// permanently and identically. An alert built on it alone fires forever on
+/// every node of a small network, gets muted, and then the real stall is
+/// invisible — the same defect this instrumentation exists to fix, one level
+/// up.
+///
+/// **The discriminator is `transient_registered` / `transient_expired` /
+/// `promoted_to_ring`**, documented above. A high `transient_expired` :
+/// `promoted_to_ring` ratio alongside climbing `connect_issued_routed` is
+/// acceptance churn — connections are being made and lost, which is #4787.
+/// Churn near zero with `connect_issued_routed` climbing means the CONNECTs
+/// are simply not finding acceptable peers: too few peers, or unreachable
+/// ones. Same routed counter, different fix.
+///
+/// Quantifying "sustained", so the guidance is implementable without
+/// re-deriving it from this loop: a round takes `BASE_WAIT_SECS * 3` plus 0–2s
+/// of jitter once the node holds any connection, so a joiner stuck in this
+/// branch emits on the order of 900 routed rounds per hour, without bound. A
+/// healthy joiner emits a few tens of them over the first minute or two and
+/// then stops, because reaching `min_connections` ends the counting. More than
+/// a few minutes of continued growth is the threshold worth alerting on.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootstrapChurnStats {
+    /// Counts transient tracking entries actually inserted, not call-site
+    /// visits: the recording site branches on whether `try_register_transient`
+    /// inserted a NEW entry, so a budget-exhausted refusal (nothing inserted)
+    /// and a re-registration of an already-tracked address (nothing new
+    /// inserted) do not inflate it.
+    pub transient_registered: u64,
+    pub transient_expired: u64,
+    /// Counts promotions the ring actually accepted — both promotion call
+    /// sites gate on `Ring::add_connection`'s reported `added`, so a
+    /// cap-rejected promotion attempt is not counted as a promotion.
+    pub promoted_to_ring: u64,
+    pub time_to_min_connections: Option<Duration>,
+    /// Below-threshold join-loop rounds that dialled gateways this node was
+    /// not yet connected to.
+    pub startup_rounds_connect_issued_gateway: u64,
+    /// Below-threshold join-loop rounds that routed CONNECTs through
+    /// already-connected gateways because every gateway transport was already
+    /// up. Sustained growth with `time_to_min_connections == None` means this
+    /// joiner never bootstrapped; the `transient_*` / `promoted_to_ring` ratio
+    /// is what separates #4787 acceptance churn from simply having too few
+    /// acceptable peers. See [`BootstrapChurnStats`].
+    pub startup_rounds_connect_issued_routed: u64,
+    /// Below-threshold join-loop rounds that issued nothing because every
+    /// candidate gateway was in exponential backoff.
+    pub startup_rounds_backoff_blocked: u64,
+    /// Below-threshold join-loop rounds that issued nothing for any other
+    /// reason — principally: every gateway is connected AND the node is within
+    /// `gateways.len()` of the threshold, so the routed-CONNECT branch does
+    /// not apply and the round deliberately waits for handshakes or pending
+    /// reservations. Not the #4787 acceptance-churn signature (see
+    /// `startup_rounds_connect_issued_routed`), but not benign either:
+    /// sustained growth means a joiner parked a few connections short of the
+    /// threshold and no longer issuing anything.
+    pub startup_rounds_no_target: u64,
+}
+
+/// Why one below-bootstrap-threshold round of `initial_join_procedure` did or
+/// did not issue CONNECTs (#4787). See [`BootstrapChurnStats`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupRoundOutcome {
+    /// CONNECTs were issued to gateways this node is not yet connected to.
+    ConnectIssuedGateway,
+    /// CONNECTs were routed through already-connected gateways toward gap
+    /// locations, because every gateway transport is already up. The #4787
+    /// stall signature — see [`BootstrapChurnStats`].
+    ConnectIssuedRouted,
+    /// Nothing issued: every candidate gateway was in exponential backoff.
+    BackoffBlocked,
+    /// Nothing issued for any other reason.
+    NoTarget,
 }
 
 /// Per-node counters measuring how often the demand-driven-hosting **computed
@@ -516,7 +790,7 @@ pub struct ConnectedPeer {
 }
 
 /// Counters for each operation type: (success, failure).
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OperationStats {
     pub gets: (u32, u32),
     pub puts: (u32, u32),
@@ -653,6 +927,10 @@ pub enum FailureReason {
 /// `RING_STATS_PROVIDER`, `ROUTER`) live in their own statics with their own
 /// replace-on-set semantics and are intentionally left untouched here.
 pub fn init(listening_port: u16, gateway_addrs: HashSet<SocketAddr>, version: String) {
+    // Pin the process-start anchor if `main` didn't (library embeddings), so
+    // the #4787 bootstrap-latency metric is measured from node start at worst
+    // rather than from the moment the threshold happened to be crossed.
+    mark_process_start();
     let status = NetworkStatus {
         gateway_failures: Vec::new(),
         connection_attempts: 0,
@@ -676,6 +954,7 @@ pub fn init(listening_port: u16, gateway_addrs: HashSet<SocketAddr>, version: St
         reconcile_shadow_inbound_unsubscribe: ReconcileShadowStats::default(),
         reconcile_shadow_connection_drop: ReconcileShadowStats::default(),
         reconcile_shadow_host_formation: ReconcileShadowStats::default(),
+        bootstrap_churn_stats: BootstrapChurnStats::default(),
     };
     match NETWORK_STATUS.get() {
         // Already initialized: overwrite the existing tracker in place so
@@ -1174,6 +1453,123 @@ pub fn connect_emit_counts() -> Option<(u64, u64)> {
     Some((c.accepts_emitted, c.rejects_emitted))
 }
 
+/// Record that a gateway-side connection was registered as transient (not
+/// yet added to ring topology) — issue #4787 instrumentation. Called from
+/// the "Registered transient connection" site in
+/// `p2p_protoc/connection_lifecycle.rs`.
+pub fn record_bootstrap_transient_registered() {
+    if let Some(status) = NETWORK_STATUS.get() {
+        if let Ok(mut s) = status.write() {
+            s.bootstrap_churn_stats.transient_registered = s
+                .bootstrap_churn_stats
+                .transient_registered
+                .saturating_add(1);
+        }
+    }
+}
+
+/// Record that a transient tracking entry expired (TTL elapsed) before the
+/// onward CONNECT promoted it — issue #4787 instrumentation. Called from the
+/// "Transient connection expired" site in
+/// `p2p_protoc/connection_lifecycle.rs`.
+pub fn record_bootstrap_transient_expired() {
+    if let Some(status) = NETWORK_STATUS.get() {
+        if let Ok(mut s) = status.write() {
+            s.bootstrap_churn_stats.transient_expired =
+                s.bootstrap_churn_stats.transient_expired.saturating_add(1);
+        }
+    }
+}
+
+/// Record that a connection was promoted from transient to ring topology —
+/// issue #4787 instrumentation. Called from the "connect_peer: promoted to
+/// ring" site in `p2p_protoc/connection_lifecycle.rs`.
+pub fn record_bootstrap_promoted_to_ring() {
+    if let Some(status) = NETWORK_STATUS.get() {
+        if let Ok(mut s) = status.write() {
+            s.bootstrap_churn_stats.promoted_to_ring =
+                s.bootstrap_churn_stats.promoted_to_ring.saturating_add(1);
+        }
+    }
+}
+
+/// Process-start anchor for the bootstrap-latency metric (#4787).
+///
+/// `Instant` has no "process start" constructor, so this is the earliest
+/// instant the process is able to take. The `freenet` binary forces it on the
+/// first line of `main` (via [`crate::mark_process_start`]), which makes
+/// `freenet.bootstrap.time_to_min_connections_seconds` literally
+/// time-from-process-start for real nodes — including config load, storage
+/// open and every other startup step that can delay CONNECT. Anything
+/// embedding the node as a library and never calling it gets the anchor
+/// lazily at first touch, which [`init`] forces, i.e. node start rather than
+/// process start.
+static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Pin the process-start anchor to *now*. Call as early as possible in
+/// `main`; see [`PROCESS_START`].
+pub fn mark_process_start() {
+    LazyLock::force(&PROCESS_START);
+}
+
+/// Elapsed time since the process-start anchor (see [`PROCESS_START`]).
+pub fn since_process_start() -> Duration {
+    PROCESS_START.elapsed()
+}
+
+/// Record that this process has first reached `min_connections`, measured from
+/// the [`PROCESS_START`] anchor (issue #4787 instrumentation, joiner-side).
+///
+/// Taking the elapsed time here rather than from a caller-supplied clock is
+/// the point: the caller's own clock necessarily starts after the cached-peer
+/// fast-reconnect path and after all node startup, so a successful cached
+/// reconnect would report ~0s for a bootstrap that really took seconds.
+///
+/// Idempotent: only the first call per process has any effect, so a wobble
+/// around the threshold does not overwrite the real bootstrap latency.
+pub fn record_bootstrap_min_connections_reached() {
+    let elapsed = since_process_start();
+    if let Some(status) = NETWORK_STATUS.get() {
+        if let Ok(mut s) = status.write() {
+            if s.bootstrap_churn_stats.time_to_min_connections.is_none() {
+                s.bootstrap_churn_stats.time_to_min_connections = Some(elapsed);
+            }
+        }
+    }
+}
+
+/// Record one below-threshold round of `initial_join_procedure`, classified by
+/// what that round actually did (issue #4787 instrumentation, joiner-side).
+/// See [`BootstrapChurnStats`] for why the classification is the measurement.
+pub fn record_bootstrap_startup_round(outcome: StartupRoundOutcome) {
+    if let Some(status) = NETWORK_STATUS.get() {
+        if let Ok(mut s) = status.write() {
+            let b = &mut s.bootstrap_churn_stats;
+            let slot = match outcome {
+                StartupRoundOutcome::ConnectIssuedGateway => {
+                    &mut b.startup_rounds_connect_issued_gateway
+                }
+                StartupRoundOutcome::ConnectIssuedRouted => {
+                    &mut b.startup_rounds_connect_issued_routed
+                }
+                StartupRoundOutcome::BackoffBlocked => &mut b.startup_rounds_backoff_blocked,
+                StartupRoundOutcome::NoTarget => &mut b.startup_rounds_no_target,
+            };
+            *slot = slot.saturating_add(1);
+        }
+    }
+}
+
+/// Read the current bootstrap-churn counters for export to `router_snapshot`
+/// (issue #4787). `None` before the singleton is initialized — which is what
+/// distinguishes "no data" from a node that has simply never bootstrapped
+/// (present, with `time_to_min_connections: None`).
+pub fn bootstrap_churn_counts() -> Option<BootstrapChurnStats> {
+    let status = NETWORK_STATUS.get()?;
+    let s = status.read().ok()?;
+    Some(s.bootstrap_churn_stats)
+}
+
 /// Count of this node's active connections that are to gateways (the
 /// NAT-stranded fingerprint — a peer stuck on gateways only). Read from the
 /// authoritative tracked `connected_peers` list. `None` before the singleton is
@@ -1413,9 +1809,9 @@ pub struct NetworkStatusSnapshot {
     /// provider closure — no mirrored counter to rot. Empty when nothing
     /// is banned (the common case).
     pub ban_list: BanListSnapshot,
-    /// Demand-driven hosting state (piece A, #4642): the capability-relative
-    /// RAM budget + per-contract Greedy-Dual keep_score that actually governs
-    /// retention. Drives the "Demand-driven eviction" card. Read from the
+    /// Demand-driven hosting state (#4642): the capability-relative budgets
+    /// plus the per-contract rows the subscriber-primary eviction sweep
+    /// orders. Drives the "Demand-driven eviction" card. Read from the
     /// canonical hosting cache via the provider closure — no mirrored counter.
     pub hosting: HostingSnapshot,
 }
@@ -1625,14 +2021,26 @@ pub struct PeerSnapshot {
 pub struct ContractSnapshot {
     pub key_short: String,
     pub key_full: String,
-    /// `ContractKey.id().to_string()` — the 32-byte content hash
-    /// portion of the key. Distinct from `key_full` which carries
-    /// the full ContractKey encoding (instance id + parameters /
-    /// code-hash bookkeeping). Surfaced so the dashboard can
-    /// cross-reference this contract against
-    /// `GovernanceSnapshot.state_by_id`, which is keyed by
-    /// `ContractInstanceId::to_string()`. Codex review of
-    /// dashboard-polish PR caught the id/key string mismatch.
+    /// `ContractKey.id().to_string()` — the 32-byte instance id.
+    ///
+    /// Surfaced so the dashboard can cross-reference this contract against
+    /// `GovernanceSnapshot`, which is keyed by
+    /// `ContractInstanceId::to_string()`.
+    ///
+    /// NOT distinct from `key_full`, despite what this comment claimed until
+    /// 2026-08-21. `impl Display for ContractKey` delegates to
+    /// `self.instance` and `ContractKey::id()` returns `&self.instance`, so
+    /// `key.to_string()` and `key.id().to_string()` produce the SAME string
+    /// and the code-hash half reaches neither. The old wording ("Distinct
+    /// from `key_full` which carries the full ContractKey encoding") sent
+    /// three separate readers of the contract detail page down the same wrong
+    /// path — twice as a reported blocking bug, once as a fix for a case that
+    /// cannot occur.
+    ///
+    /// The field still earns its place: it states the intent explicitly, and
+    /// it keeps working if the Display impl ever changes. That equality is
+    /// pinned by `contract_key_display_equals_its_instance_id` in
+    /// `server/home_page.rs`, which fails if it stops holding.
     pub instance_id: String,
     pub subscribed_secs: u64,
     pub last_updated_secs: Option<u64>,
@@ -1645,12 +2053,12 @@ pub struct ContractSnapshot {
     pub in_use: bool,
 }
 
-/// Snapshot of the demand-driven hosting cache (piece A, #4642) for the
-/// local-peer dashboard. This is the mechanism that actually governs
-/// retention today — a capability-relative RAM budget plus a Greedy-Dual
-/// `keep_score` per contract (`ring/hosting/{cache,demand}.rs`) — and it
-/// replaced the dormant MAD `GovernanceManager` (#4296). Default (all zeros,
-/// no contracts) when the node hosts nothing yet or the provider is unset.
+/// Snapshot of the demand-driven hosting cache (#4642) for the local-peer
+/// dashboard: the capability-relative budgets plus the per-contract rows.
+/// Retention is governed by the subscriber-primary sweep
+/// (`ring/hosting/cache.rs::victim_order`) — fewest subscribers first, local
+/// above downstream, `recency_seq` breaking ties. Default (all zeros, no
+/// contracts) when the node hosts nothing yet or the provider is unset.
 #[derive(Default, Clone)]
 pub struct HostingSnapshot {
     /// Configured RAM-scaled byte budget for hosted contract state.
@@ -1689,6 +2097,32 @@ pub struct HostingSnapshot {
     /// real value — so the panel can distinguish "not yet computed" from a
     /// genuine (if enormous) budget.
     pub disk_budget_bytes: Option<u64>,
+    /// Configured resident-overhead budget (bytes, #5325): the RAM-scaled
+    /// ceiling on `contract_count * ESTIMATED_RESIDENT_BYTES_PER_CONTRACT`, a
+    /// pressure axis independent of `budget_bytes`/`used_bytes` (which cover
+    /// contract STATE bytes only, not the per-contract resident bookkeeping
+    /// overhead that scales with count). See
+    /// `.claude/rules/hosting-invariants.md` invariant 3.
+    pub resident_overhead_budget_bytes: u64,
+    /// Current estimated resident-overhead bytes (#5325): `contract_count *
+    /// ESTIMATED_RESIDENT_BYTES_PER_CONTRACT`. Compare against
+    /// `resident_overhead_budget_bytes` the same way `used_bytes` is compared
+    /// against `budget_bytes`.
+    pub estimated_resident_overhead_bytes: u64,
+    /// The resident-overhead budget expressed as the contract COUNT it really
+    /// bounds (`resident_overhead_budget_bytes / 1 MiB-per-contract`).
+    ///
+    /// The dashboard renders this rather than the byte pair, because the byte
+    /// pair is not a memory measurement: the "used" side is
+    /// `contract_count * ESTIMATED_RESIDENT_BYTES_PER_CONTRACT`, so printing
+    /// it in MB reads to an operator as measured RAM when it is really a
+    /// contract-count ceiling. Derived in `HostingCache::contract_slot_budget`
+    /// so the per-contract constant keeps exactly one reader.
+    pub contract_slot_budget: u64,
+    /// Monotonic count of evictions where resident-overhead pressure was
+    /// active at decision time (#5325); may overlap with
+    /// `budget_evictions_total`.
+    pub resident_overhead_evictions_total: u64,
 }
 
 /// One hosted contract's demand-driven eviction row for the dashboard.
@@ -1698,14 +2132,35 @@ pub struct HostedContractEntry {
     pub key_full: String,
     /// Truncated key for display.
     pub key_short: String,
-    /// Greedy-Dual priority (`eviction_floor + predicted_demand`). Lowest evicts first.
-    pub keep_score: f64,
-    /// Stored per-contract read-demand estimate (reads/second).
-    pub predicted_demand: f64,
+    //
+    // `keep_score` / `predicted_demand` deliberately absent. They are the
+    // demoted telemetry-only Greedy-Dual estimator, which eviction does not
+    // read (see the "Demoted (telemetry-only) demand machinery" section of
+    // `ring/hosting/cache.rs`). The dashboard was their only consumer, and it
+    // presented them as the eviction ranking — describing a mechanism retired
+    // by the subscriber-primary rework, while the rows were really ordered by
+    // `recency_seq` (#4830). They remain on the cache-side
+    // `HostingContractScore`; do NOT re-add them here without a consumer that
+    // labels them as telemetry.
+    //
     /// Per-contract memory cost (state bytes).
     pub size_bytes: u64,
     /// Read accesses (GET/SUBSCRIBE) observed over this entry's residency.
     pub read_count: u32,
+    /// The entry's eviction recency clock — a per-run monotonic sequence.
+    ///
+    /// Reset by a real GET or PUT, and ALSO by `record_abandonment` when the
+    /// contract loses its last subscriber (a deliberate grace period, so a
+    /// just-unsubscribed contract is not evicted on a stale read accrued while
+    /// it sat in the subscription tier). It is therefore NOT purely a
+    /// last-access time, and must not be labelled as one.
+    ///
+    /// This is the field the cache actually sorts these rows by, and the only
+    /// real eviction-ranking input available on the dashboard — the subscriber
+    /// counts that outrank it are computed transiently during the sweep and
+    /// are not carried in the snapshot. Rendered so the table is ordered by a
+    /// column the reader can see.
+    pub recency_seq: u64,
     /// Whether the over-budget sweep would actually consider this contract for
     /// eviction: NOT pinned by demand (`contract_in_use`). There is no longer a
     /// `min_ttl` age gate (dropped 2026-07-08). The renderer badges "next to
@@ -2129,6 +2584,102 @@ mod tests {
             Some((5, 2)),
             "getter returns (comparisons, divergences); every call bumps comparisons, \
              only diverged calls bump divergences"
+        );
+    }
+
+    /// End-to-end for the bootstrap-acceptance-churn counters (#4787): each
+    /// record function must feed the `bootstrap_churn_counts()` getter that
+    /// `Ring` polls for the `router_snapshot` export. Distinct counts per
+    /// field so a transposition can't pass; `time_to_min_connections` is
+    /// asserted idempotent (only the FIRST call has effect).
+    #[test]
+    fn bootstrap_churn_counts_reflect_recorded_events() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        // Fresh singleton state for a deterministic baseline (init overwrites
+        // the process-global tracker in place, zeroing the counters).
+        init(31337, HashSet::new(), "test".to_string());
+
+        assert_eq!(
+            bootstrap_churn_counts(),
+            Some(BootstrapChurnStats::default()),
+            "counters start at zero/None after init"
+        );
+
+        record_bootstrap_transient_registered();
+        record_bootstrap_transient_registered();
+        record_bootstrap_transient_registered();
+        record_bootstrap_transient_expired();
+        record_bootstrap_transient_expired();
+        record_bootstrap_promoted_to_ring();
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedGateway);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedGateway);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedGateway);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedGateway);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedRouted);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedRouted);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedRouted);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedRouted);
+        record_bootstrap_startup_round(StartupRoundOutcome::ConnectIssuedRouted);
+        record_bootstrap_startup_round(StartupRoundOutcome::BackoffBlocked);
+        record_bootstrap_startup_round(StartupRoundOutcome::BackoffBlocked);
+        record_bootstrap_startup_round(StartupRoundOutcome::NoTarget);
+
+        // Not yet bootstrapped: the getter must distinguish this from
+        // "no data" — it returns `Some(..)` with a `None` latency.
+        let before = bootstrap_churn_counts().expect("singleton is initialized");
+        assert_eq!(
+            before.time_to_min_connections, None,
+            "time_to_min_connections is None until min_connections is reached"
+        );
+
+        record_bootstrap_min_connections_reached();
+        let first = bootstrap_churn_counts()
+            .expect("singleton is initialized")
+            .time_to_min_connections
+            .expect("recorded on the first call");
+        // A second call must NOT overwrite the first — the real bootstrap
+        // latency, not the latest wobble around the threshold.
+        record_bootstrap_min_connections_reached();
+
+        assert_eq!(
+            bootstrap_churn_counts(),
+            Some(BootstrapChurnStats {
+                transient_registered: 3,
+                transient_expired: 2,
+                promoted_to_ring: 1,
+                time_to_min_connections: Some(first),
+                startup_rounds_connect_issued_gateway: 4,
+                startup_rounds_connect_issued_routed: 5,
+                startup_rounds_backoff_blocked: 2,
+                startup_rounds_no_target: 1,
+            }),
+            "each record function must feed its own field, and \
+             time-to-min-connections is set on the FIRST call only"
+        );
+    }
+
+    /// The bootstrap-latency clock must run from the process-start anchor, not
+    /// from the moment the threshold is crossed — otherwise a fast cached-peer
+    /// reconnect reports ~0s for a bootstrap that really took the whole
+    /// startup. Pins that `record_bootstrap_min_connections_reached` reads
+    /// [`since_process_start`] rather than starting a fresh clock.
+    #[test]
+    fn bootstrap_latency_measures_from_process_start_anchor() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        init(31338, HashSet::new(), "test".to_string());
+        // The anchor is process-global and was forced no later than the first
+        // `init()` in this test binary, so real elapsed time has accrued.
+        let before = since_process_start();
+        record_bootstrap_min_connections_reached();
+        let recorded = bootstrap_churn_counts()
+            .expect("singleton is initialized")
+            .time_to_min_connections
+            .expect("recorded");
+        assert!(
+            recorded >= before,
+            "recorded latency {recorded:?} must be measured from the \
+             process-start anchor (>= {before:?} observed just before the call), \
+             not from a clock started at the call site"
         );
     }
 

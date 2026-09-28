@@ -31,7 +31,6 @@ use crate::config::Config;
 use crate::message::{QueryResult, Transaction};
 use crate::node::OpManager;
 use crate::wasm_runtime::UserSecretContext;
-use std::num::NonZeroUsize;
 
 pub(crate) struct ClientResponsesReceiver(UnboundedReceiver<(ClientId, RequestId, HostResult)>);
 
@@ -99,22 +98,10 @@ impl ContractHandler for NetworkContractHandler {
     where
         Self: Sized + 'static,
     {
-        // Reserve one logical core for the Tokio event loop and OS scheduling.
-        // WASM execution is CPU-bound, so the pool naturally can't exceed useful parallelism.
-        // Cap at 16 to stay well within the max_blocking_threads limit (default: 2x cores,
-        // clamped to [4, 32]), preventing the executor pool from exhausting the blocking pool.
-        let parallelism = std::thread::available_parallelism()
-            .unwrap_or(NonZeroUsize::new(4).unwrap())
-            .get()
-            .saturating_sub(1)
-            .max(1);
-
-        // Pool size configurable via FREENET_RUNTIME_POOL_SIZE env var (useful for tests)
-        let pool_size = std::env::var("FREENET_RUNTIME_POOL_SIZE")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .and_then(|n| NonZeroUsize::new(n.clamp(1, 16)))
-            .unwrap_or_else(|| NonZeroUsize::new(parallelism.clamp(1, 16)).unwrap());
+        // One shared source (`config::runtime_pool_size`) so the per-worker cache
+        // budgets, which must divide by this to stay within the node's memory
+        // limit, can never disagree with the pool actually created (#5268).
+        let pool_size = crate::config::runtime_pool_size();
 
         tracing::info!(pool_size = %pool_size, "Creating RuntimePool");
 
@@ -133,6 +120,10 @@ impl ContractHandler for NetworkContractHandler {
             config.hosting_disk_pct,
             config.max_hosting_disk,
         );
+        // Resident-overhead (count-derived) budget's live-surplus share (#5333).
+        op_manager
+            .ring
+            .configure_resident_overhead_mem_share(config.hosting_mem_share);
         // Hydrate broken-invariants flags from the same backing store so a
         // node that previously detected a non-idempotent contract doesn't
         // re-engage its broadcast storm after restart.
@@ -190,6 +181,16 @@ impl ContractHandler for NetworkContractHandler {
         // copies with no freshening path and re-introduce the #3698 stale-serve
         // bug. See .claude/rules/hosting-invariants.md (invariant 1).
         op_manager.rehydrate_local_hosting_interest();
+
+        // Restore persisted delegate subscriptions (#5493). AFTER the hosting
+        // cache and interest rehydration above, so a restored subscribe that
+        // hits a locally hosted contract sees it as local; BEFORE this
+        // function returns, which is before the event loop exists, so no
+        // delegate can run while its subscriptions are still missing. The
+        // registry half is synchronous; the network half is paced in the
+        // background (`delegate_restore`). Inert when nothing was persisted.
+        let restored = crate::wasm_runtime::delegate_subscriptions::restore_from_storage(&storage);
+        super::delegate_restore::spawn_reestablish(op_manager.clone(), restored);
 
         Ok(Self { executor, channel })
     }
@@ -827,7 +828,11 @@ pub(crate) enum ContractHandlerEvent {
         /// `Debug` impl redacts the secret, so logging this event is safe.
         user_context: Option<UserSecretContext>,
     },
-    DelegateResponse(Vec<OutboundDelegateMsg>),
+    /// `Err` on a genuine delegate execution failure (#5263 — previously
+    /// every failure here silently became an empty successful
+    /// `DelegateResponse`, so the client had no way to distinguish
+    /// "the delegate answered nothing" from "the delegate failed").
+    DelegateResponse(Result<Vec<OutboundDelegateMsg>, ExecutorError>),
     /// Export a hosted user's per-user delegate secrets into an encrypted
     /// bundle (hosted-mode export, P3-live of #4381). Carries the
     /// connection-derived `user_context` (the forge-proof per-user namespace,

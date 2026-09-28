@@ -25,8 +25,8 @@ use parking_lot::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 pub use hosting::{
-    AddClientSubscriptionResult, AddSubscriberOutcome, ClientDisconnectResult, SubscribeResult,
-    SubscribedContractSnapshot,
+    AddClientSubscriptionResult, AddSubscriberOutcome, ClientDisconnectResult, HostingReason,
+    HostingReasonStats, SubscribeResult, SubscribedContractSnapshot,
 };
 
 use crate::message::TransactionType;
@@ -85,7 +85,10 @@ mod broken_invariants;
 mod connection_backoff;
 mod connection_manager;
 pub(crate) mod contract_ban_list;
+pub(crate) mod contract_exec_metrics;
 pub(crate) mod delta_incompat;
+/// Shadow-mode detector for repairs that never converge (see the module docs).
+pub(crate) mod futile_repair;
 pub(crate) use connection_manager::ConnectionManager;
 // Nearest-neighbor ring lattice (successor+predecessor base edges).
 // `nn_lattice_active_for` is the full activation gate — the flag AND the
@@ -105,15 +108,34 @@ pub(crate) use broken_invariants::{BrokenInvariant, BrokenInvariantsTracker};
 /// executor chokepoints so a write that would overflow the aggregate disk
 /// budget is refused before any bytes land.
 pub(crate) use hosting::DiskBudgetExceeded;
+/// Hosting-BEGIN attribution: WHY this peer started hosting a contract. Every
+/// production caller of [`Ring::host_contract`] names one.
+pub(crate) use hosting::HostingCause;
 /// The pre-A2 flat 1 GiB budget, used as the upgrade-migration sentinel in
 /// `config::ConfigArgs::build` so an upgraded node re-derives its hosting budget
 /// instead of keeping the historically-pinned default (#4565).
 pub(crate) use hosting::LEGACY_FLAT_HOSTING_BUDGET_BYTES;
+/// Clamp bound re-exported only for the config-default round-trip test.
+#[cfg(test)]
+pub(crate) use hosting::MAX_DEFAULT_HOSTING_BUDGET_BYTES;
+/// The aggregate hosting-disk budget's own floor — also the wasmtime
+/// compile-cache's configured-budget bound's floor (#5328 review), so this is
+/// a genuine production dependency now, not test-only.
+pub(crate) use hosting::MIN_DEFAULT_HOSTING_BUDGET_BYTES;
 /// Single source of truth for the default hosted-contract-state budget.
 /// `config::default_max_hosting_storage()` resolves to this so the
 /// operator-facing default and the in-code fallback can never drift. The
 /// default is RAM-scaled (capability-relative, A2) rather than a flat constant.
 pub(crate) use hosting::default_hosting_budget_bytes;
+/// The aggregate hosting-disk budget's own pure clamp math. A genuine
+/// production dependency (#5328 review): the wasmtime compile-cache's
+/// configured-budget bound (`wasm_runtime::runtime::bound_by_configured_disk_budget`)
+/// projects what the live aggregate budget will resolve to via this SAME
+/// function, so the compile cache respects an operator-shrunk
+/// `--max-hosting-disk` rather than only physical disk availability. Also
+/// used by the wasmtime disk-cache sizing tests to verify headroom against
+/// the real function rather than a duplicate.
+pub(crate) use hosting::disk_budget_for_clamped;
 /// The hosting budget's pure RAM clamp, re-exported (test-only) so the wasmtime
 /// on-disk compile-cache sizing test can pin that the compile cache never
 /// exceeds the contract-state budget it accelerates.
@@ -127,10 +149,19 @@ pub use hosting::{AccessType, RecordAccessResult};
 /// Aggregate disk-budget defaults (#4683). `config` resolves the persisted
 /// `hosting-disk-pct` / `max-hosting-disk` defaults from these so the operator-
 /// facing defaults and the in-code sizing math share one source of truth.
-pub(crate) use hosting::{DEFAULT_HOSTING_DISK_PCT, DEFAULT_MAX_HOSTING_DISK_BYTES};
-/// Clamp bounds re-exported only for the config-default round-trip test.
-#[cfg(test)]
-pub(crate) use hosting::{MAX_DEFAULT_HOSTING_BUDGET_BYTES, MIN_DEFAULT_HOSTING_BUDGET_BYTES};
+pub(crate) use hosting::{
+    DEFAULT_HOSTING_DISK_PCT, DEFAULT_MAX_HOSTING_DISK_BYTES, DEFAULT_RESIDENT_OVERHEAD_MEM_SHARE,
+};
+/// Widths of the two hosted-set demand-signal histograms carried on the router
+/// snapshot, re-exported so `router` sizes its wire arrays from the same
+/// definition the bucketing code uses.
+pub(crate) use hosting::{GENUINE_ACCESS_RECENCY_BUCKETS, READ_COUNT_HIST_BUCKETS};
+/// The aggregate disk-usage tracker's mount-availability probe and directory
+/// walk, re-exported so the wasmtime on-disk compile-cache startup sizing
+/// (`wasm_runtime::runtime::default_wasmtime_cache_size_bytes_for_dir`, #5014)
+/// can bound itself by real disk headroom, not just RAM, without duplicating
+/// the `statvfs` FFI call or the walk.
+pub(crate) use hosting::{disk_available_bytes, disk_directory_size_bytes};
 pub mod interest;
 mod live_tx;
 mod location;
@@ -178,6 +209,9 @@ const FORWARDED_DEMAND_WEIGHT: f64 = 0.1;
 const GOVERNANCE_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
 use connection_backoff::ConnectionBackoff;
+
+/// How often connected-peer attributes are written to the routing dataset.
+const ROUTING_DATASET_PEER_INTERVAL: Duration = Duration::from_secs(60);
 pub use connection_backoff::ConnectionFailureReason;
 pub(crate) use peer_connection_backoff::PeerConnectionBackoff;
 
@@ -199,10 +233,92 @@ struct ContractConnectState {
     last_attempt: Instant,
 }
 
+/// Outcome of [`Ring::add_connection_reporting`].
+///
+/// Exists because `add_connection`'s `bool` answers a different question than
+/// callers usually want: it reports the readiness-threshold crossing, and is
+/// `false` both for a rejected connection and for the ordinary successful add
+/// on an already-ready node. Instrumentation that counts promotions needs
+/// `added` (issue #4787).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AddConnectionOutcome {
+    /// The ring accepted the connection into the topology. `false` means it
+    /// was rejected — e.g. the `max_connections` cap.
+    pub added: bool,
+    /// Adding this connection crossed the readiness threshold.
+    pub just_became_ready: bool,
+}
+
+/// Per-cause counts of route failure labels (#5657). See
+/// [`Ring::route_failure_cause_counts`].
+#[derive(Default)]
+struct RouteFailureCauseCounts {
+    /// Ambiguous NotFounds dropped untrained (no proof the contract exists).
+    untrained_not_found: std::sync::atomic::AtomicU64,
+    not_found: std::sync::atomic::AtomicU64,
+    timeout: std::sync::atomic::AtomicU64,
+    send_failure: std::sync::atomic::AtomicU64,
+    /// The subset of `timeout` recorded as the originator of the operation,
+    /// excluding labels recorded while relaying other nodes' operations.
+    originator_timeout: std::sync::atomic::AtomicU64,
+}
+
+/// Distinct peers tracked per snapshot window by [`TimeoutLabelWindow`].
+/// Labels for peers beyond it are counted, not attributed.
+const TIMEOUT_LABEL_WINDOW_MAX_PEERS: usize = 4096;
+
+/// Timeout route labels per peer since the last router snapshot (#5657), for
+/// the chain-blame soak histogram on `RouterSnapshotInfo`. Bounded: at most
+/// [`TIMEOUT_LABEL_WINDOW_MAX_PEERS`] fixed-size entries, cleared every
+/// snapshot.
+#[derive(Default)]
+struct TimeoutLabelWindow {
+    per_peer: std::collections::HashMap<std::net::SocketAddr, u64>,
+    untracked: u64,
+}
+
+/// Histogram of one [`TimeoutLabelWindow`]:
+/// `(peers with 1, 2-3, 4-7, 8+ labels, max per peer, untracked labels)`.
+pub(crate) type TimeoutLabelHistogram = (u64, u64, u64, u64, u64, u64);
+
+impl TimeoutLabelWindow {
+    fn record(&mut self, addr: std::net::SocketAddr) {
+        if let Some(count) = self.per_peer.get_mut(&addr) {
+            *count += 1;
+        } else if self.per_peer.len() < TIMEOUT_LABEL_WINDOW_MAX_PEERS {
+            self.per_peer.insert(addr, 1);
+        } else {
+            self.untracked += 1;
+        }
+    }
+
+    fn take_histogram(&mut self) -> TimeoutLabelHistogram {
+        let (mut b1, mut b2, mut b4, mut b8, mut max) = (0, 0, 0, 0, 0);
+        for count in self.per_peer.values().copied() {
+            match count {
+                0 => {}
+                1 => b1 += 1,
+                2..=3 => b2 += 1,
+                4..=7 => b4 += 1,
+                _ => b8 += 1,
+            }
+            max = max.max(count);
+        }
+        let untracked = self.untracked;
+        *self = Self::default();
+        (b1, b2, b4, b8, max, untracked)
+    }
+}
+
 pub(crate) struct Ring {
     pub max_hops_to_live: usize,
     pub connection_manager: ConnectionManager,
     pub router: Arc<RwLock<Router>>,
+    /// Route failure labels fed to the router, by the attempt outcome that
+    /// produced them (#5657). Diagnostics only.
+    route_failure_causes: RouteFailureCauseCounts,
+    /// Timeout labels per peer since the last router snapshot (#5657).
+    timeout_label_window: parking_lot::Mutex<TimeoutLabelWindow>,
     pub live_tx_tracker: LiveTransactionTracker,
     hosting_manager: hosting::HostingManager,
     /// Per-contract record of detected CRDT-invariant violations (e.g. a
@@ -288,6 +404,15 @@ pub(crate) struct Ring {
     /// task *reads* it. Threading the `Arc` (rather than a process-global)
     /// keeps the gauges per-node so unit tests stay isolated (#4488).
     module_cache_metrics: Arc<crate::wasm_runtime::ModuleCacheMetrics>,
+    /// Per-node contract-exec WASM counters: how many `summarize_state` /
+    /// `get_state_delta` invocations this node actually ran, split from the
+    /// cache hits that elided them. Constructed once here and shared via `Arc`:
+    /// the executor increments it through `op_manager.ring`, while
+    /// `emit_router_snapshot_telemetry` reads it. Threading the `Arc` (rather
+    /// than a process-global) keeps the counters per-node so unit tests stay
+    /// isolated (#4488). See [`contract_exec_metrics`] for why an
+    /// undifferentiated span count could not answer the storm question.
+    contract_exec_metrics: Arc<contract_exec_metrics::ContractExecMetrics>,
     /// Per-node placement-migration activity counters (#4404 follow-up).
     /// Constructed once here and shared via `Arc`: the migration SEND site
     /// (`p2p_protoc::migration`) and the two RECEIVE sites (`node::process_message`)
@@ -596,9 +721,6 @@ impl Ring {
         // refits inline once its window has turned over (#4811). There is no periodic
         // refit task — `refit_router_periodically` was deleted with this change,
         // because polling was the only thing it did.
-        let router = Arc::new(RwLock::new(Router::new(&[])));
-        crate::node::network_status::set_router(router.clone());
-
         // Interval for topology snapshot registration (1 second in test mode)
         // Registers subscription topology with the global registry for validation
         #[cfg(any(test, feature = "testing"))]
@@ -626,9 +748,27 @@ impl Ring {
             governance_config,
             time_source.clone(),
         ));
+        // Read before `connection_manager` is moved into the literal.
+        // The UPDATE limiter's per-sender budget is keyed by the
+        // immediate upstream hop, so its map is sized from this node's
+        // OWN connection cap rather than a hardcoded default.
+        let max_connections = connection_manager.max_connections;
+        // Built here, after the time source and the connection cap it depends
+        // on: the hierarchical routing estimator's horizons run on the ring's
+        // `InstantTimeSrc`, which reads tokio's clock (so they advance under a
+        // paused tokio runtime, but do NOT follow a hosting-only time override),
+        // and its peer tables are sized from this node's own `max_connections`.
+        let router = Arc::new(RwLock::new(
+            Router::new(&[])
+                .with_time_source(time_source.clone())
+                .with_max_connections(max_connections),
+        ));
+        crate::node::network_status::set_router(router.clone());
         let ring = Ring {
             max_hops_to_live,
             router,
+            route_failure_causes: RouteFailureCauseCounts::default(),
+            timeout_label_window: parking_lot::Mutex::new(TimeoutLabelWindow::default()),
             connection_manager,
             // Production passes the Ring's default `Arc<InstantTimeSrc>`
             // (wall clock). Simulation tests can inject a controllable clock via
@@ -645,7 +785,15 @@ impl Ring {
             broken_invariants: BrokenInvariantsTracker::new(time_source.clone()),
             governance,
             update_rate_limiter: Arc::new(update_rate_limit::UpdateRateLimiter::new(
-                time_source.clone(),
+                // Production passes `None` and gets `time_source` (the real
+                // clock). The override exists so a test can decide the
+                // limiter's verdict instead of racing MIN_UPDATE_INTERVAL —
+                // see `NodeConfig::update_rate_limit_time_source_override`.
+                config
+                    .update_rate_limit_time_source_override
+                    .clone()
+                    .unwrap_or_else(|| time_source.clone()),
+                max_connections,
             )),
             merge_backoff: Arc::new(merge_backoff::MergeBackoff::new(time_source.clone())),
             delta_incompat: Arc::new(delta_incompat::DeltaIncompat::new(time_source.clone())),
@@ -674,6 +822,7 @@ impl Ring {
             // (the `RuntimePool` reaches it through `op_manager.ring`). See
             // the field docs and #4488.
             module_cache_metrics: Arc::new(crate::wasm_runtime::ModuleCacheMetrics::new()),
+            contract_exec_metrics: Arc::new(contract_exec_metrics::ContractExecMetrics::default()),
             // One placement-migration counter sink per node, shared with the
             // migration send/receive sites via the `Arc` (reached through
             // `op_manager.ring`). See the field docs.
@@ -691,6 +840,29 @@ impl Ring {
         }
 
         let ring = Arc::new(ring);
+
+        // Conformance focus selects over the contracts this peer HOSTS (RFC #5320),
+        // so the ring - which owns the hosting cache - is what can answer that. A
+        // `Weak` deliberately: this closure is stored in a process-global that
+        // outlives the node, and holding a strong `Arc` there would keep an entire
+        // ring, its background tasks' handles and its caches alive past teardown. A
+        // dead ring reads as "no candidates", which surfaces as `focused=0` rather
+        // than as a stale set. Registration is a no-op unless capture is enabled.
+        {
+            let weak = Arc::downgrade(&ring);
+            crate::conformance::capture::set_hosted_contracts_source(Box::new(move || {
+                weak.upgrade()
+                    .map(|ring| {
+                        ring.hosting_manager
+                            .hosting_contract_keys()
+                            .into_iter()
+                            .map(|key| *key.id())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }));
+        }
+
         let current_span = tracing::Span::current();
         let span = if current_span.is_none() {
             tracing::info_span!("connection_maintenance")
@@ -762,6 +934,20 @@ impl Ring {
             )),
         );
 
+        // Peer-attribute snapshots for the opt-in routing dataset (#4485). Spawned
+        // only when an operator enabled recording, so a default node — and every
+        // simulation — runs no extra task and consumes no extra timer.
+        if let Some(dataset) = crate::router::dataset::global() {
+            task_monitor.register(
+                "record_routing_dataset_peers",
+                GlobalExecutor::spawn(Self::record_routing_dataset_peers(
+                    ring.clone(),
+                    dataset,
+                    ROUTING_DATASET_PEER_INTERVAL,
+                )),
+            );
+        }
+
         // Spawn periodic contract-directed CONNECT task.
         // When a peer is a "subscription root" (closest to contract among neighbors),
         // it sends CONNECTs toward the contract's ring location to merge disconnected
@@ -820,6 +1006,16 @@ impl Ring {
     /// this `Arc` is what replaced the old `MODULE_CACHE_METRICS` process-global.
     pub(crate) fn module_cache_metrics(&self) -> Arc<crate::wasm_runtime::ModuleCacheMetrics> {
         self.module_cache_metrics.clone()
+    }
+
+    /// Shared per-node contract-exec WASM counters. Returns a BORROW, not an
+    /// `Arc` clone: the increment sites sit on the contract-handling loop's hot
+    /// path (tens of calls/sec per node), where an `Arc` refcount bump would be
+    /// a needless atomic RMW on top of the counter's own. The snapshot reader
+    /// borrows the same way on its 5-minute cadence.
+    #[inline]
+    pub(crate) fn contract_exec_metrics(&self) -> &contract_exec_metrics::ContractExecMetrics {
+        &self.contract_exec_metrics
     }
 
     /// Shared per-node placement-migration counter sink (#4404 follow-up). The
@@ -1627,6 +1823,95 @@ impl Ring {
         self.event_register.register_events(events).await;
     }
 
+    /// Periodically record the attributes of every connected peer into the
+    /// routing dataset, keyed like its route events so the two join offline.
+    async fn record_routing_dataset_peers(
+        ring: Arc<Self>,
+        dataset: &'static crate::router::dataset::RoutingDataset,
+        interval_duration: Duration,
+    ) {
+        let shutdown = ring.shutdown_token();
+        let mut interval = tokio::time::interval(interval_duration);
+        loop {
+            if sleep_or_shutdown(&shutdown, async {
+                interval.tick().await;
+            })
+            .await
+            {
+                break;
+            }
+            // Skip, never leave the loop: this task is registered with the
+            // background task monitor, and any monitored task exiting ends the
+            // node. A recorder that reached its byte cap must not take a
+            // gateway down with it.
+            if !dataset.is_recording() {
+                continue;
+            }
+            let peers = ring.routing_dataset_peer_attributes();
+            // The dataset's own clock, shared with route events so the two join.
+            dataset.record_peers(crate::router::dataset::now_ms(), peers);
+        }
+    }
+
+    /// Snapshot connected-peer attributes. Each lock is taken on its own and
+    /// released before the next, so this cannot participate in a lock-order
+    /// inversion; assembly happens afterwards with no lock held.
+    fn routing_dataset_peer_attributes(&self) -> Vec<crate::router::dataset::PeerAttributes> {
+        use crate::router::dataset::{PeerSnapshotInputs, peer_attributes};
+
+        let connections: Vec<(PeerKeyLocation, f64)> = self
+            .connection_manager
+            .get_connections_by_location()
+            .into_values()
+            .flatten()
+            .map(|connection| {
+                let connected_s = connection.duration_ms() as f64 / 1000.0;
+                (connection.location, connected_s)
+            })
+            .collect();
+        let addrs: Vec<SocketAddr> = connections
+            .iter()
+            .filter_map(|(peer, _)| peer.socket_addr())
+            .collect();
+        let gateways: Option<Vec<TransportPublicKey>> =
+            self.upgrade_op_manager().map(|op_manager| {
+                op_manager
+                    .configured_gateways
+                    .iter()
+                    .map(|gateway| gateway.pub_key().clone())
+                    .collect()
+            });
+        let versions: HashMap<SocketAddr, (u8, u8, u16)> = addrs
+            .iter()
+            .filter_map(|addr| {
+                self.connection_manager
+                    .remote_version(*addr)
+                    .map(|version| (*addr, version))
+            })
+            .collect();
+        let health: HashMap<SocketAddr, (u64, u64)> = {
+            let tracker = self.connection_manager.peer_health.lock();
+            addrs
+                .iter()
+                .filter_map(|addr| tracker.counts(addr).map(|counts| (*addr, counts)))
+                .collect()
+        };
+        let transfer: HashMap<SocketAddr, (u64, u64)> =
+            crate::transport::metrics::TRANSPORT_METRICS
+                .per_peer_snapshot()
+                .into_iter()
+                .map(|(addr, sent, received)| (addr, (sent, received)))
+                .collect();
+
+        peer_attributes(&PeerSnapshotInputs {
+            connections: &connections,
+            gateways: gateways.as_deref(),
+            versions: &versions,
+            health: &health,
+            transfer: &transfer,
+        })
+    }
+
     /// Periodically emit a router model snapshot as an EventKind::RouterSnapshot event.
     ///
     /// This captures the isotonic regression curves and model state, including the
@@ -1644,6 +1929,13 @@ impl Ring {
         let mut prev_broadcast_stream_failures_total: u64 = crate::node::BROADCAST_STREAM_METRICS
             .snapshot()
             .streaming_failures_total;
+        // Same shape for the contract-exec WASM counters: the monotonic totals
+        // are emitted for collector-side differencing, and these loop-local
+        // previous values turn the four headline arms into per-window deltas so
+        // a SINGLE snapshot says whether this node's summarize/delta load was
+        // cache hits or real WASM work. Seeded from the current values so the
+        // first emitted window covers only elapsed-since-start work.
+        let mut prev_exec = ring.contract_exec_metrics.snapshot();
         // The diagnostic block is substantially wider than the ordinary
         // snapshot gauges. Its counters are lifetime-monotonic, so collecting
         // locally on every event but exporting one in six snapshots preserves
@@ -1681,6 +1973,18 @@ impl Ring {
             let (open_fds, fd_soft_limit) = read_fd_usage();
             snapshot.open_fds = open_fds;
             snapshot.fd_soft_limit = fd_soft_limit;
+
+            // Chain-blame soak histogram (#5657). Hand-mirrored into
+            // `event_kind_to_json` like every field here (pinned by
+            // `router_snapshot_json_includes_timeout_label_histogram`).
+            let (peers_1, peers_2_3, peers_4_7, peers_8_plus, max_per_peer, untracked) =
+                ring.take_timeout_label_histogram();
+            snapshot.timeout_label_peers_1 = Some(peers_1);
+            snapshot.timeout_label_peers_2_3 = Some(peers_2_3);
+            snapshot.timeout_label_peers_4_7 = Some(peers_4_7);
+            snapshot.timeout_label_peers_8_plus = Some(peers_8_plus);
+            snapshot.timeout_label_max_per_peer = Some(max_per_peer);
+            snapshot.timeout_labels_untracked = Some(untracked);
 
             // Nearest-neighbor ring-lattice completeness + probe health (#4760),
             // mirrored from the home-page ring-stats provider (see
@@ -1783,6 +2087,21 @@ impl Ring {
             // (CPU / broadcast fan-out) dominated the node's total. Nonzero =
             // the trigger is firing; runaway = floors/share miscalibrated.
             snapshot.hosting_cost_evictions_total = Some(hosting.cost_evictions_total);
+            // Resident-overhead pressure axis (#5325). These were computed and
+            // rendered on the node's own dashboard from the day the axis landed,
+            // but never mirrored here, so the collector could not see the SECOND
+            // eviction pressure at all: a node shedding purely under slot
+            // pressure reported a low state-byte occupancy and nothing else. Same
+            // hand-mirror footgun as the gauges above — pinned by
+            // `hosting_cache_stats_fields_are_all_mirrored`, which fails when a
+            // `HostingCacheStats` field has no reader in this block.
+            snapshot.hosting_resident_overhead_budget_bytes =
+                Some(hosting.resident_overhead_budget_bytes);
+            snapshot.hosting_estimated_resident_overhead_bytes =
+                Some(hosting.estimated_resident_overhead_bytes);
+            snapshot.hosting_contract_slot_budget = Some(hosting.contract_slot_budget);
+            snapshot.hosting_resident_overhead_evictions_total =
+                Some(hosting.resident_overhead_evictions_total);
             // Local notification-delivery outcomes (#4681). PER-NODE counters
             // (see HostingManager), read once per snapshot — no per-event
             // stream. Read from the manager, not the stats snapshot, for the
@@ -1897,6 +2216,30 @@ impl Ring {
             if let Some((accepts, rejects)) = crate::node::network_status::connect_emit_counts() {
                 snapshot.connect_accepts_emitted = Some(accepts);
                 snapshot.connect_rejects_emitted = Some(rejects);
+            }
+
+            // Bootstrap-acceptance-churn counters (#4787): gateway-side
+            // transient registration/expiry/promotion totals plus
+            // joiner-side time-to-min-connections and startup retry count.
+            // Instrumentation only, no behavior change — see
+            // `network_status::BootstrapChurnStats`.
+            if let Some(b) = crate::node::network_status::bootstrap_churn_counts() {
+                snapshot.bootstrap_transient_registered = Some(b.transient_registered);
+                snapshot.bootstrap_transient_expired = Some(b.transient_expired);
+                snapshot.bootstrap_promoted_to_ring = Some(b.promoted_to_ring);
+                snapshot.bootstrap_time_to_min_connections_secs =
+                    b.time_to_min_connections.map(|d| d.as_secs_f64());
+                // `Some(false)` (never bootstrapped) is a different fact from
+                // `None` (this build/collector doesn't report it) — see #4787
+                // finding 3.
+                snapshot.bootstrap_completed = Some(b.time_to_min_connections.is_some());
+                snapshot.bootstrap_startup_rounds_connect_issued_gateway =
+                    Some(b.startup_rounds_connect_issued_gateway);
+                snapshot.bootstrap_startup_rounds_connect_issued_routed =
+                    Some(b.startup_rounds_connect_issued_routed);
+                snapshot.bootstrap_startup_rounds_backoff_blocked =
+                    Some(b.startup_rounds_backoff_blocked);
+                snapshot.bootstrap_startup_rounds_no_target = Some(b.startup_rounds_no_target);
             }
 
             // Computed-upstream vs. stored-`is_upstream`-flag divergence counters
@@ -2019,6 +2362,70 @@ impl Ring {
             snapshot.broadcast_stream_failures_last_snapshot =
                 Some(broadcast_stream_failures_delta);
 
+            // Contract-exec WASM counters: the split that makes a summarize rate
+            // interpretable. A high `fast_hits` rate with a low `wasm_calls` rate
+            // is a warm cache doing cheap work; the two converging means the
+            // change-detector has stopped covering the load and the storm class
+            // (#4473 / #4610 / #5040 / #5238) has re-armed.
+            //
+            // EVERY arm is windowed, not a chosen headline subset. Emitting some
+            // arms as a 5-minute delta and others as a lifetime total, under
+            // parallel names on one log line, invites reading them as comparable
+            // magnitudes — and the arm that would be understated that way is
+            // `delta_wasm_uncached`, the per-local-subscriber fan-out delta that
+            // has no cache in front of it at all and can dominate on a
+            // client-facing node. An overstated saving is worse than a missing
+            // one, because it terminates the investigation.
+            let ce = ring.contract_exec_metrics.snapshot();
+            let ce_d = ce.window_deltas(&mut prev_exec);
+            // Exhaustive destructure with no `..` rest pattern, on BOTH the
+            // lifetime snapshot and the window deltas. A 9th counter arm then
+            // fails to COMPILE here until it is exported, which is strictly
+            // stronger than the source-scrape pin below: a scrape that hardcodes
+            // today's eight names passes unchanged when a ninth is added, which
+            // is exactly how a counter ends up recorded but never exported.
+            let contract_exec_metrics::ContractExecSnapshot {
+                summarize_fast_hits: _,
+                summarize_reload_hits: _,
+                summarize_wasm_calls: _,
+                summarize_wasm_uncached: _,
+                delta_fast_hits: _,
+                delta_reload_hits: _,
+                delta_wasm_calls: _,
+                delta_wasm_uncached: _,
+            } = ce;
+            let contract_exec_metrics::ContractExecSnapshot {
+                summarize_fast_hits: _,
+                summarize_reload_hits: _,
+                summarize_wasm_calls: _,
+                summarize_wasm_uncached: _,
+                delta_fast_hits: _,
+                delta_reload_hits: _,
+                delta_wasm_calls: _,
+                delta_wasm_uncached: _,
+            } = ce_d;
+            snapshot.contract_exec_summarize_fast_hits_total = Some(ce.summarize_fast_hits);
+            snapshot.contract_exec_summarize_reload_hits_total = Some(ce.summarize_reload_hits);
+            snapshot.contract_exec_summarize_wasm_calls_total = Some(ce.summarize_wasm_calls);
+            snapshot.contract_exec_summarize_wasm_uncached_total = Some(ce.summarize_wasm_uncached);
+            snapshot.contract_exec_delta_fast_hits_total = Some(ce.delta_fast_hits);
+            snapshot.contract_exec_delta_reload_hits_total = Some(ce.delta_reload_hits);
+            snapshot.contract_exec_delta_wasm_calls_total = Some(ce.delta_wasm_calls);
+            snapshot.contract_exec_delta_wasm_uncached_total = Some(ce.delta_wasm_uncached);
+            snapshot.contract_exec_summarize_fast_hits_last_snapshot =
+                Some(ce_d.summarize_fast_hits);
+            snapshot.contract_exec_summarize_reload_hits_last_snapshot =
+                Some(ce_d.summarize_reload_hits);
+            snapshot.contract_exec_summarize_wasm_calls_last_snapshot =
+                Some(ce_d.summarize_wasm_calls);
+            snapshot.contract_exec_summarize_wasm_uncached_last_snapshot =
+                Some(ce_d.summarize_wasm_uncached);
+            snapshot.contract_exec_delta_fast_hits_last_snapshot = Some(ce_d.delta_fast_hits);
+            snapshot.contract_exec_delta_reload_hits_last_snapshot = Some(ce_d.delta_reload_hits);
+            snapshot.contract_exec_delta_wasm_calls_last_snapshot = Some(ce_d.delta_wasm_calls);
+            snapshot.contract_exec_delta_wasm_uncached_last_snapshot =
+                Some(ce_d.delta_wasm_uncached);
+
             // Placement-quality gauge (#4404 follow-up): host-to-hosted-key
             // ring-distance distribution. If the SubscribeHint placement
             // migration is working, hosting drifts toward each contract's key,
@@ -2089,6 +2496,12 @@ impl Ring {
                 )
             {
                 let lifecycle = op_manager.interest_manager.interest_lifecycle_snapshot();
+                // SHADOW MODE: futile-repair evidence (#nc-merge). Rides the
+                // same fixed-cardinality block for the same reason the rest of
+                // it does — `network_efficiency_v1` is the only family that
+                // bypasses both the node rate limiter and the collector's 5%
+                // sampler, so a rare-but-decisive counter is not sampled away.
+                let futile_repair = op_manager.interest_manager.futile_repair_snapshot();
                 let receiver = op_manager.payload_mix.receiver_apply_stats();
                 let queue = crate::node::BROADCAST_QUEUE_EFFICIENCY_METRICS.snapshot();
                 let state_rejections = crate::contract::state_size_rejection_snapshot();
@@ -2222,6 +2635,16 @@ impl Ring {
                     tel,
                     shadow,
                     eff: telemetry.network_efficiency_delivery,
+                    // Hosting observability (#4642): WHY this peer began hosting
+                    // each contract, and the two demand-signal gauges the
+                    // eviction ranking is built on. `hosting` is the same
+                    // `hosting_cache_stats()` read that feeds `vict_n`/`vict_b`
+                    // above, so all four describe one consistent hosted set.
+                    host_begin: hosting.hosting_begins,
+                    host_reads: hosting.read_count_hist,
+                    host_recency: hosting.genuine_access_recency,
+                    futile: futile_repair.to_row(),
+                    futile_ladder: futile_repair.ladder,
                 });
             }
 
@@ -2238,6 +2661,20 @@ impl Ring {
                 broadcast_stream_attempts_total = bs.streaming_attempts_total,
                 broadcast_stream_failures_total = bs.streaming_failures_total,
                 broadcast_stream_failures_last_snapshot = broadcast_stream_failures_delta,
+                // The per-window arms are logged (not the lifetime totals) so a
+                // local operator reading `journalctl` gets the answer from ONE
+                // line, and ALL EIGHT are logged in the same unit — mixing
+                // 5-minute deltas with lifetime totals under parallel names
+                // would invite reading them as comparable magnitudes. `info!`
+                // survives `release_max_level_info`; `debug!` would not.
+                contract_exec_summarize_fast_hits_last_snapshot = ce_d.summarize_fast_hits,
+                contract_exec_summarize_reload_hits_last_snapshot = ce_d.summarize_reload_hits,
+                contract_exec_summarize_wasm_calls_last_snapshot = ce_d.summarize_wasm_calls,
+                contract_exec_summarize_wasm_uncached_last_snapshot = ce_d.summarize_wasm_uncached,
+                contract_exec_delta_fast_hits_last_snapshot = ce_d.delta_fast_hits,
+                contract_exec_delta_reload_hits_last_snapshot = ce_d.delta_reload_hits,
+                contract_exec_delta_wasm_calls_last_snapshot = ce_d.delta_wasm_calls,
+                contract_exec_delta_wasm_uncached_last_snapshot = ce_d.delta_wasm_uncached,
                 hosted_contracts_count = ?snapshot.hosted_contracts_count,
                 hosted_key_distance_median = ?snapshot.hosted_key_distance_median,
                 hosted_key_distance_p90 = ?snapshot.hosted_key_distance_p90,
@@ -3220,6 +3657,33 @@ impl Ring {
                 .disk_available_bytes()
                 .unwrap_or(u64::MAX);
             ring.hosting_manager.recompute_effective_budget(available);
+
+            // Resident-overhead (count-derived) budget (#5325, live-basis #5333):
+            // recomputed every tick so it tracks LIVE memory pressure rather than
+            // being fixed at startup — a peer that grows busy (or a `MemoryMax`
+            // cgroup that gets tightened externally) re-derives a smaller budget
+            // on the next tick, and one that goes idle re-derives a larger one.
+            // All three reads are cheap (a `/proc` parse or a single syscall on
+            // every platform), so unlike the disk-usage walk above these run
+            // inline rather than on a blocking thread.
+            // 1 GiB fallback mirrors `cache::FALLBACK_TOTAL_RAM_BYTES` (private to
+            // that module) for the rare case the RAM read itself fails.
+            let total_ram = crate::wasm_runtime::read_total_ram_bytes()
+                .map(|v| v as u64)
+                .unwrap_or(1024 * 1024 * 1024);
+            let pool_size = crate::config::runtime_pool_size().get();
+            let live_signals = match (
+                crate::wasm_runtime::read_own_rss_bytes(),
+                crate::wasm_runtime::read_available_memory_bytes(),
+            ) {
+                (Some(rss), Some(avail)) => Some((rss as u64, avail as u64)),
+                _ => None,
+            };
+            ring.hosting_manager.recompute_resident_overhead_budget(
+                total_ram,
+                pool_size,
+                live_signals,
+            );
         }
     }
 
@@ -3299,22 +3763,33 @@ impl Ring {
     /// Returns a `RecordAccessResult` containing:
     /// - `is_new`: Whether this contract was newly added (vs. refreshed existing)
     /// - `evicted`: Contracts that were evicted to make room
+    ///
+    /// `cause` attributes WHY this peer is (possibly) starting to host: the
+    /// caller is the only code that knows whether this is its own client's
+    /// request, someone else's request in transit, or a sub-op fetch. It feeds
+    /// telemetry only — it changes nothing about what is hosted or evicted.
     pub fn host_contract(
         &self,
         key: ContractKey,
         size_bytes: u64,
         access_type: AccessType,
+        cause: HostingCause,
     ) -> RecordAccessResult {
         self.hosting_manager
-            .record_contract_access(key, size_bytes, access_type)
+            .record_contract_access(key, size_bytes, access_type, cause)
     }
 
     /// Record a GET access to a contract in the hosting cache.
     ///
     /// Returns a `RecordAccessResult` indicating whether this was a new addition
     /// and which contracts were evicted (if any).
-    pub fn record_get_access(&self, key: ContractKey, size_bytes: u64) -> RecordAccessResult {
-        self.host_contract(key, size_bytes, AccessType::Get)
+    pub fn record_get_access(
+        &self,
+        key: ContractKey,
+        size_bytes: u64,
+        cause: HostingCause,
+    ) -> RecordAccessResult {
+        self.host_contract(key, size_bytes, AccessType::Get, cause)
     }
 
     /// Record that a local-client GET was answered from local hosted state
@@ -3410,6 +3885,14 @@ impl Ring {
             .configure_disk_budget(hosting_disk_pct, max_hosting_disk);
     }
 
+    /// Install the operator-configurable share of live host-wide surplus
+    /// memory the resident-overhead (count-derived) eviction budget may claim
+    /// (#5333). Called once at startup; the 60s sweep's recompute reads it.
+    pub fn configure_resident_overhead_mem_share(&self, mem_share: f64) {
+        self.hosting_manager
+            .configure_resident_overhead_mem_share(mem_share);
+    }
+
     /// Drop the ring's clones of the redb `Storage` handle (hosting metadata +
     /// broken-invariants persistence). Called on node shutdown so the redb
     /// `Database` Arc count can fall to zero and release the on-disk file lock
@@ -3482,7 +3965,28 @@ impl Ring {
     /// (i.e., we just became ready to accept non-CONNECT operations).
     /// Returns `false` if the connection was rejected (e.g., capacity cap) or we
     /// were already ready.
+    ///
+    /// NOTE the two meanings of `false` collapsed here: callers that need to
+    /// know whether the connection was actually *added* — as opposed to
+    /// whether readiness was just crossed — must use
+    /// [`Ring::add_connection_reporting`]. Reading this `bool` as "added" is
+    /// wrong in both directions: it is `false` for the overwhelmingly common
+    /// successful add (we were already ready), and it is only ever `true` for
+    /// the single add that crosses the threshold.
     pub async fn add_connection(&self, loc: Location, peer: PeerId, was_reserved: bool) -> bool {
+        self.add_connection_reporting(loc, peer, was_reserved)
+            .await
+            .just_became_ready
+    }
+
+    /// [`Ring::add_connection`], reporting whether the ring actually accepted
+    /// the connection as well as whether readiness was crossed.
+    pub async fn add_connection_reporting(
+        &self,
+        loc: Location,
+        peer: PeerId,
+        was_reserved: bool,
+    ) -> AddConnectionOutcome {
         tracing::info!(
             peer = %peer,
             peer_location = %loc,
@@ -3504,7 +4008,10 @@ impl Ring {
                 peer_location = %loc,
                 "Ring rejected connection - not updating caches or logging connection event"
             );
-            return false;
+            return AddConnectionOutcome {
+                added: false,
+                just_became_ready: false,
+            };
         }
         if let Some(own_loc) = self.connection_manager.own_location().location() {
             crate::node::network_status::set_own_location(own_loc.as_f64());
@@ -3514,8 +4021,11 @@ impl Ring {
         self.refresh_density_request_cache();
 
         let is_ready = self.connection_manager.is_self_ready();
-        // Return true only if we just crossed the threshold
-        !was_ready && is_ready
+        AddConnectionOutcome {
+            added: true,
+            // Only report readiness if we just crossed the threshold.
+            just_became_ready: !was_ready && is_ready,
+        }
     }
 
     pub fn update_connection_identity(&self, old_peer: &PeerId, new_peer: PeerId) {
@@ -3556,36 +4066,79 @@ impl Ring {
     /// Return the most optimal peer for hosting a given contract.
     ///
     /// This function only considers connected peers, not the node itself.
+    /// `log_as` says whether this selection is a routing decision for the
+    /// routing dataset's candidate log.
     #[inline]
     pub fn closest_potentially_hosting(
         &self,
+        log_as: crate::router::dataset::DecisionLog,
         contract_key: &ContractKey,
         skip_list: impl Contains<std::net::SocketAddr>,
     ) -> Option<PeerKeyLocation> {
+        let log = self.candidate_log_for(log_as);
+        // The router read lock is held across candidate gathering and
+        // selection, as before candidate logging existed; it is released
+        // before the dataset write and the debug trace.
         let router = self.router.read();
         let target = Location::from(contract_key);
-        let (peer, decision) = self
-            .connection_manager
-            .routing_with_telemetry(target, None, skip_list, &router);
+        self.connection_manager
+            .routing_with(target, None, skip_list, move |candidates| {
+                let (selected, decision, capture) = router.select_k_best_peers_capturing(
+                    candidates.iter(),
+                    target,
+                    1,
+                    log.as_ref().is_some_and(|(log, _)| log.capture),
+                );
+                drop(router);
+                if let Some((log, op)) = log {
+                    log.record(
+                        op,
+                        target,
+                        &selected,
+                        matches!(
+                            decision.strategy,
+                            crate::router::RoutingStrategy::DistanceBased
+                        ),
+                        capture,
+                    );
+                }
+                let peer = selected.into_iter().next().cloned();
+                tracing::debug!(
+                    target_location = %target.as_f64(),
+                    strategy = ?decision.strategy,
+                    num_candidates = decision.candidates.len(),
+                    total_routing_events = decision.total_routing_events,
+                    selected = peer.is_some(),
+                    "routing_decision"
+                );
+                peer
+            })
+            .flatten()
+    }
 
-        if let Some(decision) = &decision {
-            tracing::debug!(
-                target_location = %target.as_f64(),
-                strategy = ?decision.strategy,
-                num_candidates = decision.candidates.len(),
-                total_routing_events = decision.total_routing_events,
-                selected = peer.is_some(),
-                "routing_decision"
-            );
+    /// The candidate log for a selection, and its op, when it is a routing
+    /// decision and logging is on. `Unlogged` consults nothing.
+    fn candidate_log_for(
+        &self,
+        log_as: crate::router::dataset::DecisionLog,
+    ) -> Option<(
+        crate::router::dataset::CandidateLog<'static>,
+        crate::node::network_status::OpType,
+    )> {
+        match log_as {
+            crate::router::dataset::DecisionLog::Joinable(op) => {
+                crate::router::dataset::candidate_log(|| self.time_source.now())
+                    .map(|log| (log, op))
+            }
+            crate::router::dataset::DecisionLog::Unlogged => None,
         }
-
-        peer
     }
 
     /// Get k best peers for hosting a contract, ranked by routing predictions.
     /// Accepts either &ContractKey or &ContractInstanceId (both implement From<&T> for Location).
     pub fn k_closest_potentially_hosting<K>(
         &self,
+        log_as: crate::router::dataset::DecisionLog,
         contract_id: &K,
         skip_list: impl Contains<std::net::SocketAddr> + Clone,
         k: usize,
@@ -3703,13 +4256,28 @@ impl Ring {
         // which may fail (especially in NAT scenarios without coordination).
         // It's better to return fewer candidates than unreachable ones.
 
-        let (selected, decision) = self.router.read().select_k_best_peers_with_telemetry(
+        let log = self.candidate_log_for(log_as);
+        let (selected, decision, capture) = self.router.read().select_k_best_peers_capturing(
             candidates.iter(),
             target_location,
             k,
+            log.as_ref().is_some_and(|(log, _)| log.capture),
         );
-        // `selected` borrows from `candidates`, not from the router guard, so
-        // the read lock is released here before the tracing/collect below.
+        // `selected` and `capture` borrow from `candidates`, not from the
+        // router guard, so the read lock is released at the end of the
+        // statement above, before the dataset write.
+        if let Some((log, op)) = log {
+            log.record(
+                op,
+                target_location,
+                &selected,
+                matches!(
+                    decision.strategy,
+                    crate::router::RoutingStrategy::DistanceBased
+                ),
+                capture,
+            );
+        }
 
         tracing::debug!(
             target_location = %target_location.as_f64(),
@@ -3732,6 +4300,21 @@ impl Ring {
     }
 
     pub fn routing_finished(&self, event: crate::router::RouteEvent) {
+        self.report_route_outcome_to_health(&event);
+        self.router.write().add_event(event);
+    }
+
+    /// Everything [`Self::routing_finished`] does except feed the router: the
+    /// topology manager's outbound-request accounting and the `peer_health`
+    /// success or failure. `routing_finished` is exactly this plus
+    /// `Router::add_event`, so the two cannot drift.
+    ///
+    /// #5657 labels the ROUTER against the hop an attempt was actually
+    /// forwarded to. Peer health and topology keep their pre-#5657 inputs
+    /// unchanged (the originator's `current_target`, the same events, the same
+    /// conditions): changing them would change health-based eviction and the
+    /// request-density model, which #5657 does not set out to do.
+    pub(crate) fn report_route_outcome_to_health(&self, event: &crate::router::RouteEvent) {
         self.connection_manager
             .topology_manager
             .write()
@@ -3750,8 +4333,136 @@ impl Ring {
                 }
             }
         }
+    }
 
-        self.router.write().add_event(event);
+    /// Feed a route event to the routing model ONLY, bypassing the
+    /// `peer_health` and `topology_manager` side effects of
+    /// [`Self::routing_finished`].
+    ///
+    /// Two reasons, both load-bearing:
+    ///
+    /// 1. **Peer health is not routing success.** `PeerHealthTracker` evicts a
+    ///    connection at a 90 % failure rate over 10 events, or after 10 minutes
+    ///    with one failure and no success. A `NotFound` (the peer does not have
+    ///    this contract) or an end-to-end timeout (anywhere down the chain) says
+    ///    nothing about whether the connection to the first hop is healthy, and
+    ///    feeding them in would evict healthy peers, most exposed a gateway that
+    ///    fields many requests for absent contracts.
+    /// 2. **Determinism.** `PeerHealthTracker` stamps `std::time::Instant::now()`
+    ///    (a pre-existing TimeSource rule violation). An earlier iteration of
+    ///    the relay hooks routed relay events through `routing_finished` and
+    ///    broke the strict-determinism tests (`test_strict_determinism_*`,
+    ///    `test_direct_runner_determinism`, `test_thundering_herd_connect_storm`).
+    ///
+    /// CAVEAT: `Router::add_event` stamps Renegade observations from the
+    /// router's injected clock, but the ring always injects `InstantTimeSrc`,
+    /// whose `system_time_now()` is `SystemTime::now()`, so this path is not
+    /// deterministic under simulation either; the determinism tests pass
+    /// because that variance is far below what they compare.
+    ///
+    /// `source` tags the event in the opt-in routing dataset (#5648): `Relay`
+    /// for an outcome a relay hop observed about its downstream peer,
+    /// `Originator` for one observed by the node that started the operation.
+    /// The model treats both identically.
+    pub(crate) fn record_route_event_router_only(
+        &self,
+        event: crate::router::RouteEvent,
+        source: crate::router::dataset::RouteSource,
+    ) {
+        use crate::router::dataset::RouteSource;
+        let mut router = self.router.write();
+        match source {
+            RouteSource::Originator => router.add_event(event),
+            RouteSource::Relay => router.add_relay_event(event),
+        }
+    }
+
+    /// Record a routing FAILURE label for one attempt. Router only; see
+    /// [`Self::record_route_event_router_only`]. The sole production sink of
+    /// [`crate::operations::route_attempt::RouteAttemptRecorder`]; `cause` is
+    /// counted in [`Self::route_failure_cause_counts`].
+    pub(crate) fn record_route_failure(
+        &self,
+        event: crate::router::RouteEvent,
+        cause: crate::operations::route_attempt::AttemptFailure,
+        source: crate::router::dataset::RouteSource,
+    ) {
+        use crate::operations::route_attempt::AttemptFailure;
+        debug_assert!(
+            matches!(event.outcome, crate::router::RouteOutcome::Failure),
+            "record_route_failure called with a non-failure outcome"
+        );
+        let counter = match cause {
+            AttemptFailure::NotFound => &self.route_failure_causes.not_found,
+            AttemptFailure::Timeout => &self.route_failure_causes.timeout,
+            AttemptFailure::SendFailure => &self.route_failure_causes.send_failure,
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if cause == AttemptFailure::Timeout
+            && matches!(source, crate::router::dataset::RouteSource::Originator)
+        {
+            self.route_failure_causes
+                .originator_timeout
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if cause == AttemptFailure::Timeout {
+            if let Some(addr) = event.peer.socket_addr() {
+                self.timeout_label_window.lock().record(addr);
+            }
+        }
+        self.record_route_event_router_only(event, source);
+    }
+
+    /// Count ambiguous `NotFound`s an operation dropped untrained (#5657).
+    /// Never trained on; lets a test prove NotFounds actually occurred.
+    pub(crate) fn record_untrained_not_founds(&self, count: u64) {
+        self.route_failure_causes
+            .untrained_not_found
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Ambiguous `NotFound`s dropped untrained on this node (#5657).
+    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
+    pub(crate) fn untrained_not_found_count(&self) -> u64 {
+        self.route_failure_causes
+            .untrained_not_found
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Drain the per-peer timeout-label window into its histogram (#5657).
+    /// Called once per router snapshot, which is its only consumer: the
+    /// window is a drain, so no second reader (a local dashboard) can share
+    /// it without stealing labels from the telemetry export.
+    pub(crate) fn take_timeout_label_histogram(&self) -> TimeoutLabelHistogram {
+        self.timeout_label_window.lock().take_histogram()
+    }
+
+    /// These count only labels that went through the recorder. They do NOT
+    /// reconcile with `Router::outcome_totals().failures`: PUT relay's
+    /// downstream forwarding still labels its own failures through
+    /// `record_relay_route_event` (not yet migrated), and `LabelMode::Legacy`
+    /// restores `routing_finished` failure events that bypass them too.
+    ///
+    /// `(not_found, timeout, send_failure)` failure labels this node has fed
+    /// its router, by cause (#5657).
+    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
+    pub(crate) fn route_failure_cause_counts(&self) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.route_failure_causes.not_found.load(Relaxed),
+            self.route_failure_causes.timeout.load(Relaxed),
+            self.route_failure_causes.send_failure.load(Relaxed),
+        )
+    }
+
+    /// Timeout failure labels this node recorded as the originator of an
+    /// operation: the subset of [`Self::route_failure_cause_counts`]'s timeouts
+    /// that excludes labels recorded while relaying (#5660).
+    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
+    pub(crate) fn originator_route_timeout_count(&self) -> u64 {
+        self.route_failure_causes
+            .originator_timeout
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     // ==================== Subscription Management (Lease-Based) ====================
@@ -3913,6 +4624,12 @@ impl Ring {
     /// machinery would refresh the lease unboundedly).
     pub(crate) fn contract_in_use(&self, contract: &ContractKey) -> bool {
         self.hosting_manager.contract_in_use(contract)
+    }
+
+    /// Instance ids of every contract [`Self::contract_in_use`] holds for. See
+    /// `HostingManager::in_use_contract_ids`.
+    pub(crate) fn in_use_contract_ids(&self) -> Vec<ContractInstanceId> {
+        self.hosting_manager.in_use_contract_ids()
     }
 
     /// Single helper for every state-write chokepoint. Does the three
@@ -4189,6 +4906,14 @@ impl Ring {
         self.hosting_manager.hosting_contracts_count()
     }
 
+    /// The same hosted set as [`Self::hosting_contracts_count`], partitioned by
+    /// WHY each contract is held, with state bytes per bucket. Backs the
+    /// `freenet.node.contracts.hosted{,.bytes}` OTel gauges. See
+    /// [`HostingReason`].
+    pub fn hosted_by_reason(&self) -> HostingReasonStats {
+        self.hosting_manager.hosted_by_reason()
+    }
+
     /// Number of active network subscription leases this node currently holds.
     ///
     /// Together with [`hosting_contracts_count`](Self::hosting_contracts_count)
@@ -4388,12 +5113,18 @@ impl Ring {
     }
 
     /// Snapshot of the demand-driven hosting state for the local-peer
-    /// dashboard (piece A, #4642). Reads the canonical hosting cache — the
-    /// capability-relative RAM budget + per-contract Greedy-Dual keep_score
-    /// that actually governs retention today, replacing the dormant MAD
-    /// governance detector (#4296). No mirror, no cache: the aggregate gauges
-    /// and per-contract rows come straight from the `HostingManager`, so the
-    /// panel can't drift the way a mirrored counter would.
+    /// dashboard (#4642). Reads the canonical hosting cache — the
+    /// capability-relative budget plus the per-contract rows. No mirror, no
+    /// cache: the aggregate gauges and per-contract rows come straight from
+    /// the `HostingManager`, so the panel can't drift the way a mirrored
+    /// counter would.
+    ///
+    /// The demoted telemetry-only estimator (`keep_score` /
+    /// `predicted_demand`) is deliberately NOT carried on these rows: eviction
+    /// does not read it, and rendering it implied a ranking it never governed.
+    /// Real eviction ordering is subscriber-primary (`victim_order`);
+    /// `recency_seq` is the one ranking input available here, and is what the
+    /// cache actually sorts these rows by.
     ///
     /// Per-contract rows are returned in EVICTION order (next victim first).
     /// The renderer bounds how many it displays; the full count is
@@ -4422,10 +5153,9 @@ impl Ring {
                 ns::HostedContractEntry {
                     key_full,
                     key_short,
-                    keep_score: row.keep_score,
-                    predicted_demand: row.predicted_demand,
                     size_bytes: row.size_bytes,
                     read_count: row.read_count,
+                    recency_seq: row.recency_seq,
                     eviction_eligible,
                 }
             })
@@ -4461,6 +5191,10 @@ impl Ring {
             disk_compile_cache_bytes,
             disk_total_bytes,
             disk_budget_bytes,
+            resident_overhead_budget_bytes: stats.resident_overhead_budget_bytes,
+            estimated_resident_overhead_bytes: stats.estimated_resident_overhead_bytes,
+            contract_slot_budget: stats.contract_slot_budget,
+            resident_overhead_evictions_total: stats.resident_overhead_evictions_total,
         }
     }
 
@@ -5446,6 +6180,7 @@ impl Ring {
             // Periodic peer health check: evict peers with sustained routing failures.
             if last_health_check.elapsed() > HEALTH_CHECK_INTERVAL {
                 last_health_check = self.time_source.now();
+
                 let current_ring = self.connection_manager.connection_count();
                 let unhealthy = self
                     .connection_manager
@@ -7393,6 +8128,92 @@ mod k_closest_source_tests {
         }
         assert_eq!(checked, 24, "expected exactly 24 export assignments");
     }
+
+    /// The routing-dataset peer task is registered with the background task
+    /// monitor, and ANY monitored task exiting ends the node
+    /// (`p2p_impl.rs`, `wait_for_any_exit`). So its loop may leave only on
+    /// shutdown: a recorder that stops — at its byte cap, or on a write error —
+    /// must not take the gateway down. An earlier revision `break`ed there.
+    #[test]
+    fn routing_dataset_peer_task_exits_only_on_shutdown() {
+        let src = production_source();
+        let body = extract_fn_body(src, "async fn record_routing_dataset_peers(");
+        let breaks = body.matches("break").count();
+        let returns = body.matches("return").count();
+        assert_eq!(
+            (breaks, returns),
+            (1, 0),
+            "record_routing_dataset_peers must leave its loop only on shutdown; \
+             any other exit ends the node"
+        );
+        let (before_break, _) = body.split_once("break").unwrap();
+        assert!(
+            before_break.contains("sleep_or_shutdown"),
+            "the single break must be the shutdown one"
+        );
+    }
+
+    /// Same mirror seam, for the contract-exec WASM counters. The export block
+    /// hand-copies each `ContractExecSnapshot` field into its `RouterSnapshotInfo`
+    /// twin, so a swap — feeding `..._wasm_calls_total` from `fast_hits`, say —
+    /// compiles cleanly and emits a plausible number that is measuring the
+    /// opposite thing.
+    ///
+    /// That failure mode is not hypothetical here: mistaking cache hits for WASM
+    /// work is the exact blindness these counters exist to remove, and an
+    /// overstated saving is worse than a missing one because it terminates the
+    /// investigation. Assert every assignment reads its own field.
+    /// Whitespace-normalized so rustfmt line-wrapping is irrelevant.
+    #[test]
+    fn contract_exec_export_maps_each_field_to_its_own_counter() {
+        let src = production_source();
+        let block = extract_fn_body(src, "async fn emit_router_snapshot_telemetry(");
+        let norm = block.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        let fields = [
+            "summarize_fast_hits",
+            "summarize_reload_hits",
+            "summarize_wasm_calls",
+            "summarize_wasm_uncached",
+            "delta_fast_hits",
+            "delta_reload_hits",
+            "delta_wasm_calls",
+            "delta_wasm_uncached",
+        ];
+        for field in fields {
+            // Every arm is exported in BOTH units. A lifetime total sitting on
+            // a line of otherwise-parallel `_last_snapshot` names reads as a
+            // comparable magnitude and understates nothing visibly — which is
+            // why the pin demands both rather than either.
+            for expected in [
+                format!("snapshot.contract_exec_{field}_total = Some(ce.{field});"),
+                format!("snapshot.contract_exec_{field}_last_snapshot = Some(ce_d.{field});"),
+            ] {
+                assert!(
+                    norm.contains(&expected),
+                    "mirror-seam: export must contain `{expected}` — a field swap here \
+                     silently reports one arm's count under another arm's name"
+                );
+            }
+        }
+
+        // The delta computation itself is NOT scraped: it is
+        // `ContractExecSnapshot::window_deltas`, one function whose field
+        // correspondence is structural and unit-tested by
+        // `each_field_differences_its_own_twin`. What must be pinned here is
+        // that the emitter uses it rather than re-deriving eight deltas by hand
+        // at the call site, which is where a cross-wiring hides.
+        assert!(
+            norm.contains("let ce_d = ce.window_deltas(&mut prev_exec);"),
+            "the emitter must delegate to ContractExecSnapshot::window_deltas, not \
+             hand-difference each arm at the call site"
+        );
+        assert!(
+            !norm.contains("window_delta(ce."),
+            "no hand-written per-arm window_delta call may remain — that is the \
+             shape in which one arm gets differenced against another's previous value"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8301,6 +9122,57 @@ mod instant_now_pin_test {
     }
 }
 
+/// Wiring pin for the shadow-mode futile-repair rows on
+/// `network_efficiency_v1` (`crate::ring::futile_repair`).
+///
+/// The detector's state machine is unit-tested in its own module and its
+/// handler wiring in `node.rs`. What NEITHER can see is the assignment in
+/// `router_snapshot_telemetry` that connects the two: drop it, or feed a row
+/// from the wrong source, and every one of those tests stays green while the
+/// fleet publishes zeros — for a release whose entire purpose is to establish
+/// the detector's real frequency in production. That is the #4009/#4010
+/// manually-mirrored-telemetry footgun, and the snapshot loop is a 30-minute
+/// background cadence inside a fully-built `Ring`, which is why it is pinned by
+/// source scrape rather than executed.
+#[cfg(test)]
+mod futile_repair_wiring_pin {
+    /// Production source only: the needles below appear in this module too, and
+    /// a pin that matches its own source is a pin that can never fail.
+    fn production_source() -> &'static str {
+        const FULL: &str = include_str!("ring.rs");
+        let cutoff = FULL
+            .find("\n#[cfg(test)]\nmod ")
+            .expect("ring.rs must have a top-level #[cfg(test)] mod section");
+        &FULL[..cutoff]
+    }
+
+    #[test]
+    fn network_efficiency_block_is_fed_from_the_futile_repair_snapshot() {
+        let src = production_source();
+        assert!(
+            src.contains(
+                "let futile_repair = op_manager.interest_manager.futile_repair_snapshot();"
+            ),
+            "the futile-repair snapshot is no longer taken in the \
+             router_snapshot block — the detector then collects its counters \
+             and exports nothing, while every test for it still passes"
+        );
+        for (field, source_expr) in [
+            ("futile", "futile_repair.to_row()"),
+            ("futile_ladder", "futile_repair.ladder"),
+        ] {
+            let needle = format!("{field}: {source_expr},");
+            assert!(
+                src.contains(&needle),
+                "`NetworkEfficiencyV1.{field}` must be populated as `{needle}` \
+                 in the router_snapshot block. Dropping it, or feeding it from \
+                 anything else, publishes an empty or wrong series with no \
+                 failing test — #4009/#4010."
+            );
+        }
+    }
+}
+
 /// Pin tests for the periodic hosting-advertisement re-request (#4642 spec step
 /// 1, "Fix 1"): the reliability backstop that heals a dropped on-connect
 /// advertisement exchange or a dropped per-eviction retraction. It is PIGGYBACKED
@@ -8667,6 +9539,48 @@ mod sleep_or_shutdown_tests {
     }
 }
 
+/// Wiring pin for the hosting-observability rows on `network_efficiency_v1`.
+///
+/// The counters themselves are unit-tested in `ring::hosting` (attribution) and
+/// `tracing::telemetry` (serialization). What NEITHER can see is the assignment
+/// in `router_snapshot_telemetry` that connects them: drop it, or feed a row
+/// from the wrong source, and every one of those tests stays green while the
+/// fleet publishes zeros or the wrong series. That is the #4009/#4010
+/// manually-mirrored-telemetry footgun, and the snapshot loop is a 30-minute
+/// background cadence inside a fully-built `Ring`, which is why it is pinned by
+/// source scrape rather than executed.
+#[cfg(test)]
+mod hosting_observability_wiring_pin {
+    /// Production source only: the needles below appear in this module too, and
+    /// a pin that matches its own source is a pin that can never fail.
+    fn production_source() -> &'static str {
+        const FULL: &str = include_str!("ring.rs");
+        let cutoff = FULL
+            .find("\n#[cfg(test)]\nmod ")
+            .expect("ring.rs must have a top-level #[cfg(test)] mod section");
+        &FULL[..cutoff]
+    }
+
+    #[test]
+    fn network_efficiency_block_is_fed_from_the_hosting_cache_stats() {
+        let src = production_source();
+        for (field, source_expr) in [
+            ("host_begin", "hosting.hosting_begins"),
+            ("host_reads", "hosting.read_count_hist"),
+            ("host_recency", "hosting.genuine_access_recency"),
+        ] {
+            let needle = format!("{field}: {source_expr},");
+            assert!(
+                src.contains(&needle),
+                "`NetworkEfficiencyV1.{field}` must be populated as `{needle}` in \
+                 the router_snapshot block. Without this assignment the hosting \
+                 counters are collected and never exported, and every unit test \
+                 for them still passes — the exact failure mode of #4009/#4010."
+            );
+        }
+    }
+}
+
 /// End-to-end seam test for cost-aware eviction (#4861 / #4903 review):
 /// drives the message axis through the REAL production reporter
 /// (`Ring::report_contract_resource_usage` → topology meter) and the REAL
@@ -8684,6 +9598,104 @@ mod cost_pressure_seam_tests {
             freenet_stdlib::prelude::ContractInstanceId::new([seed; 32]),
             freenet_stdlib::prelude::CodeHash::new([seed.wrapping_add(1); 32]),
         )
+    }
+
+    /// `Ring::add_connection`'s `bool` reports the READINESS-threshold
+    /// crossing, not acceptance — it is `false` both when the ring rejects the
+    /// connection and (far more often) when the connection is added while the
+    /// node is already ready. #4787's promotion counter has to know which
+    /// happened, so `add_connection_reporting` splits the two. This pins that
+    /// split, because gating the counter on the plain `bool` — the obvious
+    /// reading of a function returning `false` on rejection — would silently
+    /// count almost no promotions at all.
+    #[tokio::test]
+    async fn add_connection_reporting_separates_added_from_readiness() {
+        let config_args = crate::config::ConfigArgs {
+            id: Some("add-conn-outcome-4787".to_string()),
+            mode: Some(crate::contract::OperationMode::Local),
+            ..Default::default()
+        };
+        let node_config =
+            crate::node::NodeConfig::new(config_args.build().await.expect("build Config"))
+                .await
+                .expect("build NodeConfig");
+        let (_notification_rx, notification_tx) = crate::node::event_loop_notification_channel();
+        let (ops_ch_channel, _ch_channel, _wait_for_event) =
+            crate::contract::contract_handler_channel();
+        let connection_manager = crate::ring::ConnectionManager::new(&node_config);
+        let (result_router_tx, _result_router_rx) = tokio::sync::mpsc::channel(100);
+        let task_monitor = crate::node::background_task_monitor::BackgroundTaskMonitor::new();
+        let op_manager = std::sync::Arc::new(
+            crate::node::OpManager::new(
+                notification_tx,
+                ops_ch_channel,
+                &node_config,
+                crate::tracing::DynamicRegister::new(vec![]),
+                connection_manager,
+                result_router_tx,
+                &task_monitor,
+            )
+            .expect("build OpManager"),
+        );
+        op_manager.ring.attach_op_manager(&op_manager);
+        op_manager
+            .ring
+            .connection_manager
+            .set_own_addr_local_for_test("127.0.0.1:14101".parse().unwrap());
+        let ring = &op_manager.ring;
+
+        let max = ring.connection_manager.max_connections;
+        // Beyond max + LATTICE_OVERMAX_SLACK the ceiling is hard, so a margin
+        // past that guarantees we observe a rejection.
+        let attempts = max + super::connection_manager::LATTICE_OVERMAX_SLACK + 16;
+
+        let mut added = 0usize;
+        let mut ready_crossings = 0usize;
+        let mut added_without_readiness = 0usize;
+        let mut first_rejection: Option<usize> = None;
+        for i in 0..attempts {
+            let kp = crate::transport::TransportKeypair::new();
+            let addr: std::net::SocketAddr = format!("127.0.0.2:{}", 20000 + i as u16)
+                .parse()
+                .expect("addr");
+            let loc = super::Location::new((i as f64 + 0.5) / attempts as f64);
+            let outcome = ring
+                .add_connection_reporting(loc, super::PeerId::new(kp.public().clone(), addr), false)
+                .await;
+            if outcome.added {
+                added += 1;
+                if outcome.just_became_ready {
+                    ready_crossings += 1;
+                } else {
+                    added_without_readiness += 1;
+                }
+            } else {
+                first_rejection = Some(i);
+                break;
+            }
+        }
+
+        let rejected_at = first_rejection.expect(
+            "the ring must eventually reject an add at the connection ceiling — \
+             without a rejection this test cannot show `added` is meaningful",
+        );
+        assert!(
+            rejected_at >= max,
+            "rejection came at {rejected_at}, before max_connections={max}"
+        );
+        assert!(
+            added_without_readiness > 0,
+            "the overwhelming majority of accepted adds report \
+             just_became_ready=false; if this is 0 the test proves nothing"
+        );
+        assert!(
+            ready_crossings <= 1,
+            "readiness can be crossed at most once, got {ready_crossings}"
+        );
+        assert!(
+            added >= max,
+            "expected at least {max} accepted adds, got {added}"
+        );
     }
 
     /// Runs under `start_paused` so `tokio::time::Instant` — the clock behind
@@ -8740,9 +9752,24 @@ mod cost_pressure_seam_tests {
         let read_hot = seam_key(3);
 
         // Host all three through the production entry point (PUT seeds).
-        let _ = ring.host_contract(junk, 121, crate::ring::AccessType::Put);
-        let _ = ring.host_contract(subscribed, 121, crate::ring::AccessType::Put);
-        let _ = ring.host_contract(read_hot, 121, crate::ring::AccessType::Put);
+        let _ = ring.host_contract(
+            junk,
+            121,
+            crate::ring::AccessType::Put,
+            crate::ring::HostingCause::Other,
+        );
+        let _ = ring.host_contract(
+            subscribed,
+            121,
+            crate::ring::AccessType::Put,
+            crate::ring::HostingCause::Other,
+        );
+        let _ = ring.host_contract(
+            read_hot,
+            121,
+            crate::ring::AccessType::Put,
+            crate::ring::HostingCause::Other,
+        );
         assert!(ring.is_hosting_contract(&junk), "precondition: hosted");
 
         // Age the PUT-seed recency stamps past the cost window, so only the
@@ -8761,7 +9788,7 @@ mod cost_pressure_seam_tests {
             ),
             crate::ring::hosting::AddSubscriberOutcome::Rejected
         ));
-        let _ = ring.record_get_access(read_hot, 121);
+        let _ = ring.record_get_access(read_hot, 121, crate::ring::HostingCause::Other);
 
         // The FX2j storm profile, reported for ALL THREE contracts through
         // the production reporter: one 58-target fan-out dispatch every 1.6s
@@ -8935,8 +9962,18 @@ mod cost_pressure_seam_tests {
         let junk = seam_key(1);
         let subscribed = seam_key(2);
 
-        let _ = ring.host_contract(junk, 121, crate::ring::AccessType::Put);
-        let _ = ring.host_contract(subscribed, 121, crate::ring::AccessType::Put);
+        let _ = ring.host_contract(
+            junk,
+            121,
+            crate::ring::AccessType::Put,
+            crate::ring::HostingCause::Other,
+        );
+        let _ = ring.host_contract(
+            subscribed,
+            121,
+            crate::ring::AccessType::Put,
+            crate::ring::HostingCause::Other,
+        );
         // Both advertised to co-hosts — the state this fix is about. Set directly
         // (not via `announce_contract_hosted`) so the only `HostingAnnounce` the
         // channel can carry is a retraction.
@@ -9031,7 +10068,12 @@ mod cost_pressure_seam_tests {
 
         // (1) Re-hosted: present in the hosting cache when the reclaim runs.
         let rehosted = seam_key(4);
-        let _ = ring.host_contract(rehosted, 121, crate::ring::AccessType::Put);
+        let _ = ring.host_contract(
+            rehosted,
+            121,
+            crate::ring::AccessType::Put,
+            crate::ring::HostingCause::Other,
+        );
         op_manager.neighbor_hosting.on_contract_hosted(&rehosted);
 
         // (2) Back in use: absent from the hosting cache, but a downstream
@@ -9229,4 +10271,711 @@ pub(crate) enum RingError {
     NoHostingPeers(ContractInstanceId),
     #[error("Peer has not joined the network yet (no ring location established)")]
     PeerNotJoined,
+}
+
+#[cfg(test)]
+mod timeout_label_window_tests {
+    use super::{TIMEOUT_LABEL_WINDOW_MAX_PEERS, TimeoutLabelWindow};
+    use std::net::SocketAddr;
+
+    fn addr(i: usize) -> SocketAddr {
+        SocketAddr::from(([10, (i >> 16) as u8, (i >> 8) as u8, i as u8], 4000))
+    }
+
+    #[test]
+    fn histogram_buckets_labels_per_peer_and_resets() {
+        let mut window = TimeoutLabelWindow::default();
+        // peer 0: 1 label, peer 1: 3, peer 2: 5, peer 3: 9
+        for (peer, labels) in [(0, 1), (1, 3), (2, 5), (3, 9)] {
+            for _ in 0..labels {
+                window.record(addr(peer));
+            }
+        }
+        assert_eq!(window.take_histogram(), (1, 1, 1, 1, 9, 0));
+        assert_eq!(
+            window.take_histogram(),
+            (0, 0, 0, 0, 0, 0),
+            "each snapshot window starts empty"
+        );
+    }
+
+    #[test]
+    fn window_is_bounded_and_counts_overflow() {
+        let mut window = TimeoutLabelWindow::default();
+        for i in 0..TIMEOUT_LABEL_WINDOW_MAX_PEERS + 10 {
+            window.record(addr(i));
+        }
+        // A tracked peer keeps counting past the cap.
+        window.record(addr(0));
+        assert_eq!(window.per_peer.len(), TIMEOUT_LABEL_WINDOW_MAX_PEERS);
+        let (b1, b2, _, _, max, untracked) = window.take_histogram();
+        assert_eq!(untracked, 10);
+        assert_eq!(b1 + b2, TIMEOUT_LABEL_WINDOW_MAX_PEERS as u64);
+        assert_eq!(max, 2);
+    }
+}
+
+#[cfg(test)]
+mod hosting_stats_mirror_source_tests {
+    //! Source-scrape pin: every `HostingCacheStats` field must be mirrored into
+    //! `RouterSnapshotInfo` by `emit_router_snapshot_telemetry`, INTO THE FIELD
+    //! THAT MATCHES IT.
+    //!
+    //! The telemetry path is hand-mirrored twice over (`HostingCacheStats` ->
+    //! `RouterSnapshotInfo` -> the OTLP JSON body), and nothing in the type
+    //! system connects the hops. The resident-overhead pressure axis (#5325)
+    //! was computed, rendered on the node's own dashboard, and dropped on the
+    //! floor at THIS step for its whole life: the collector could not see the
+    //! second eviction pressure at all, so a node evicting purely under slot
+    //! pressure looked idle in fleet telemetry.
+    //!
+    //! The pin asserts the WHOLE assignment, not merely that the field is read
+    //! somewhere in the function — the same shape as
+    //! `contract_exec_export_maps_each_field_to_its_own_counter`, and for the
+    //! same reason its doc gives: a swap "compiles cleanly and emits a plausible
+    //! number that is measuring the opposite thing". Here a swapped pair would
+    //! report every node as over its resident-overhead budget. A presence-only
+    //! check is also satisfied by `let _ = hosting.x;`, by an assignment into the
+    //! WRONG destination (which additionally clobbers a live gauge), and by a
+    //! field name left behind in a comment.
+    //!
+    //! It checks the FIRST hop only. The second hop (`RouterSnapshotInfo` ->
+    //! JSON) is guarded by the per-gauge pins in `tracing::telemetry`, including
+    //! `router_snapshot_json_includes_resident_overhead_gauges`; it has no
+    //! structural pin of its own, which is a known gap, not an oversight.
+
+    /// Fields whose destination is a key in the `NetworkEfficiencyV1` struct
+    /// literal rather than a `snapshot.hosting_*` assignment, with that key.
+    /// These are the histogram arms; their names are deliberately abbreviated at
+    /// the destination, so the mechanical `hosting_<field>` rule does not apply
+    /// and the expected statement has to be spelled out.
+    const STRUCT_LITERAL_DESTINATIONS: &[(&str, &str)] = &[
+        ("eviction_victim_counts", "vict_n"),
+        ("eviction_victim_bytes", "vict_b"),
+        ("hosting_begins", "host_begin"),
+        ("read_count_hist", "host_reads"),
+        ("genuine_access_recency", "host_recency"),
+    ];
+
+    /// Fields deliberately NOT mirrored to telemetry. Each entry needs a reason:
+    /// adding one is a decision to make a stat invisible to the collector, which
+    /// is exactly what this pin exists to stop happening by accident.
+    ///
+    /// Empty today, so `not_mirrored_exclusions_carry_a_reason` below cannot
+    /// currently fail. That is deliberate — it arms the escape hatch before
+    /// anyone uses it — but it means the test name overstates present coverage;
+    /// do not read it as evidence that anything was checked.
+    const DELIBERATELY_NOT_MIRRORED: &[(&str, &str)] = &[];
+
+    /// Every field on `HostingCacheStats`. An exact count, not a floor: the
+    /// scrape below can only under-count (a declaration shape it cannot parse),
+    /// and a floor set below the true count lets exactly that go unnoticed.
+    /// Adding a field means bumping this deliberately AND mirroring the field.
+    const EXPECTED_HOSTING_CACHE_STATS_FIELDS: usize = 19;
+
+    fn production_source() -> &'static str {
+        const FULL: &str = include_str!("ring.rs");
+        // ring.rs has inline `#[cfg(test)]` annotations on individual `use`
+        // declarations near the top of the file, so a plain
+        // `find("#[cfg(test)]")` would cut the file off before the function we
+        // want to scrape. Anchor on the first *top-level* test module instead.
+        // Keep this comment: without it the next editor "simplifies" the anchor
+        // and the scrape silently starts returning the wrong region.
+        let cutoff = FULL
+            .find("\n#[cfg(test)]\nmod ")
+            .expect("ring.rs must have a top-level #[cfg(test)] mod section");
+        &FULL[..cutoff]
+    }
+
+    /// Body of the item starting at `signature_prefix`, brace-balanced. Bounding
+    /// to the item is load-bearing: an unbounded search over an 8000-line file
+    /// would match this module's own assertion strings and pass vacuously. (The
+    /// `production_source` cutoff makes that structurally impossible here too,
+    /// since this module sits past it — belt and braces.)
+    fn item_body<'a>(source: &'a str, signature_prefix: &str) -> &'a str {
+        let start = source
+            .find(signature_prefix)
+            .unwrap_or_else(|| panic!("could not find {signature_prefix}"));
+        let brace = source[start..].find('{').expect("item must have a body");
+        let body_start = start + brace + 1;
+        let bytes = source.as_bytes();
+        let mut depth: i32 = 1;
+        let mut i = body_start;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[body_start..i];
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        panic!("unbalanced braces while extracting {signature_prefix}");
+    }
+
+    /// `body` with `//` comments removed and whitespace collapsed.
+    ///
+    /// Both halves are load-bearing. Comments must go because `str::contains`
+    /// over raw source cannot tell a statement from `// snapshot.hosting_x =
+    /// Some(hosting.x);`, so commenting a mirror out — what someone actually
+    /// does while debugging, which is precisely when the pin is the only thing
+    /// still watching — would otherwise keep it green. Whitespace must collapse
+    /// because rustfmt wraps these assignments across two lines.
+    ///
+    /// Stripping `//` inside a string literal would be wrong, but only in the
+    /// strict direction: it can make the pin fail spuriously, never pass
+    /// spuriously. There are no such literals in the scraped function today.
+    fn strip_comments_and_normalize(body: &str) -> String {
+        let uncommented: Vec<&str> = body
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(at) => &line[..at],
+                None => line,
+            })
+            .collect();
+        uncommented
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Field names declared on `HostingCacheStats`, in declaration order.
+    ///
+    /// Fails LOUDLY on any line it does not recognise rather than skipping it.
+    /// A scraper that silently drops an unparseable declaration fails OPEN: the
+    /// field is never checked for a mirror, which is the exact omission this
+    /// module exists to catch. `pub(crate)` is the shape that bit an earlier
+    /// draft — `HostingCacheStats` is itself `pub(crate)`, so a contributor
+    /// writing `pub(crate)` on a field is entirely natural.
+    fn hosting_cache_stats_fields() -> Vec<String> {
+        const CACHE_SRC: &str = include_str!("ring/hosting/cache.rs");
+        let body = item_body(CACHE_SRC, "pub(crate) struct HostingCacheStats {");
+        let mut fields = Vec::new();
+        for raw in body.lines() {
+            let mut line = raw.trim();
+            if line.is_empty() || line.starts_with("///") || line.starts_with("//") {
+                continue;
+            }
+            // An inline attribute (`#[doc(hidden)] pub x: u64,`) must not hide a
+            // field: strip the attribute and keep reading the same line.
+            while let Some(rest) = line.strip_prefix("#[") {
+                match rest.find(']') {
+                    Some(close) => line = rest[close + 1..].trim(),
+                    None => break,
+                }
+            }
+            if line.is_empty() {
+                continue;
+            }
+            let decl = line
+                .strip_prefix("pub(crate) ")
+                .or_else(|| line.strip_prefix("pub "))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "unrecognised line in HostingCacheStats: {raw:?}. Every line in \
+                         that struct must be blank, a comment, an attribute, or a \
+                         `pub`/`pub(crate)` field declaration. If a new shape is \
+                         legitimate, teach this scraper about it — do NOT let it skip \
+                         the line, because an unscraped field is never checked for a \
+                         mirror, which is the omission this module exists to catch."
+                    )
+                });
+            let (name, _) = decl.split_once(':').unwrap_or_else(|| {
+                panic!("HostingCacheStats field declaration has no `:`: {raw:?}")
+            });
+            fields.push(name.trim().to_string());
+        }
+        assert_eq!(
+            fields.len(),
+            EXPECTED_HOSTING_CACHE_STATS_FIELDS,
+            "scraped {} HostingCacheStats fields, expected {}: {fields:?}. If you added \
+             or removed a field, bump EXPECTED_HOSTING_CACHE_STATS_FIELDS deliberately \
+             (and mirror the new field). If you did not, the scrape has gone wrong and \
+             this pin is measuring less than it claims — fix the scrape, do not relax \
+             the count.",
+            fields.len(),
+            EXPECTED_HOSTING_CACHE_STATS_FIELDS,
+        );
+        fields
+    }
+
+    /// The exact statement that must appear for `field`.
+    fn expected_mirror(field: &str) -> String {
+        match STRUCT_LITERAL_DESTINATIONS
+            .iter()
+            .find(|(name, _)| *name == field)
+        {
+            Some((_, key)) => format!("{key}: hosting.{field},"),
+            None => format!("snapshot.hosting_{field} = Some(hosting.{field});"),
+        }
+    }
+
+    #[test]
+    fn hosting_cache_stats_fields_are_all_mirrored() {
+        let body = item_body(
+            production_source(),
+            "async fn emit_router_snapshot_telemetry(",
+        );
+        let norm = strip_comments_and_normalize(body);
+
+        // The mirror reads every stat off one binding. Anchoring on it gives a
+        // directed failure if the read moves, instead of 19 confusing ones.
+        assert!(
+            norm.contains("let hosting = ring.hosting_manager.hosting_cache_stats();"),
+            "emit_router_snapshot_telemetry must bind the hosting stats as \
+             `hosting`; if that binding was renamed, update this pin's expected \
+             statements too — they all read through it."
+        );
+
+        let mut missing = Vec::new();
+        for field in hosting_cache_stats_fields() {
+            if DELIBERATELY_NOT_MIRRORED
+                .iter()
+                .any(|(name, _)| *name == field)
+            {
+                continue;
+            }
+            let expected = expected_mirror(&field);
+            if !norm.contains(&expected) {
+                missing.push(expected);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "HostingCacheStats fields not mirrored into RouterSnapshotInfo by \
+             emit_router_snapshot_telemetry. Expected statements not found: \
+             {missing:#?}\n\nEvery stat must reach `RouterSnapshotInfo` (and from \
+             there the OTLP body) into the field that matches it, or be listed in \
+             DELIBERATELY_NOT_MIRRORED with a reason. A stat that exists but is not \
+             exported is invisible to fleet telemetry — see #5325, where the \
+             resident-overhead eviction axis was dropped exactly here. A stat \
+             exported under the WRONG name is worse: it reads as a plausible number \
+             measuring the opposite thing."
+        );
+    }
+
+    /// The expected-statement table must actually describe the destinations, not
+    /// merely be self-consistent: every `STRUCT_LITERAL_DESTINATIONS` entry names
+    /// a real `HostingCacheStats` field. A stale entry here would silently excuse
+    /// a field from the mechanical rule without anyone noticing.
+    #[test]
+    fn struct_literal_destinations_name_real_fields() {
+        let fields = hosting_cache_stats_fields();
+        for (field, key) in STRUCT_LITERAL_DESTINATIONS {
+            assert!(
+                fields.iter().any(|f| f == field),
+                "STRUCT_LITERAL_DESTINATIONS names {field:?} (destination key \
+                 {key:?}), which is not a HostingCacheStats field. Remove the stale \
+                 entry — while it is here, a field by that name is exempt from the \
+                 mechanical `snapshot.hosting_<field>` rule for no reason."
+            );
+        }
+    }
+
+    /// The exclusion list is an escape hatch, so make using it deliberate: an
+    /// entry with no reason is the shape that turns this pin ornamental. Note
+    /// this cannot fail while the list is empty — see the const's doc.
+    #[test]
+    fn not_mirrored_exclusions_carry_a_reason() {
+        for (name, reason) in DELIBERATELY_NOT_MIRRORED {
+            assert!(
+                reason.len() > 20,
+                "DELIBERATELY_NOT_MIRRORED entry {name:?} needs a real reason, \
+                 got {reason:?}"
+            );
+        }
+    }
+
+    /// The two properties the scrape helpers must have, checked directly rather
+    /// than inferred from the pin passing: a commented-out mirror must not count,
+    /// and rustfmt's line wrapping must not stop a mirror counting.
+    #[test]
+    fn normalization_drops_comments_and_rejoins_wrapped_statements() {
+        let commented = "            // snapshot.hosting_x = Some(hosting.x);\n";
+        assert!(
+            !strip_comments_and_normalize(commented)
+                .contains("snapshot.hosting_x = Some(hosting.x);"),
+            "a commented-out mirror must not satisfy the pin"
+        );
+
+        let wrapped = "            snapshot.hosting_x =\n                Some(hosting.x);\n";
+        assert!(
+            strip_comments_and_normalize(wrapped).contains("snapshot.hosting_x = Some(hosting.x);"),
+            "a mirror rustfmt wrapped across two lines must still satisfy the pin"
+        );
+
+        let trailing = "            snapshot.hosting_x = Some(hosting.x); // why\n";
+        assert!(
+            strip_comments_and_normalize(trailing)
+                .contains("snapshot.hosting_x = Some(hosting.x);"),
+            "a trailing comment must not hide the statement in front of it"
+        );
+    }
+
+    /// Asserting the whole statement is what makes a transposition visible; a
+    /// presence-only check (`body.contains("hosting.<field>")`) would not see it,
+    /// and a swapped pair here would report every node as over its
+    /// resident-overhead budget. Checked directly so the property is evidenced
+    /// rather than asserted in a doc comment.
+    #[test]
+    fn expected_mirror_pins_the_destination_not_just_the_read() {
+        let e = expected_mirror("resident_overhead_budget_bytes");
+        assert_eq!(
+            e,
+            "snapshot.hosting_resident_overhead_budget_bytes = \
+             Some(hosting.resident_overhead_budget_bytes);"
+        );
+        // A transposed assignment does NOT contain the expected statement.
+        let transposed = "snapshot.hosting_resident_overhead_budget_bytes = \
+                          Some(hosting.estimated_resident_overhead_bytes);";
+        assert!(!transposed.contains(&e));
+        // Neither does a bare read, nor a read into the wrong destination.
+        assert!(!"let _ = hosting.resident_overhead_budget_bytes;".contains(&e));
+        assert!(
+            !"snapshot.hosting_current_bytes = Some(hosting.resident_overhead_budget_bytes);"
+                .contains(&e)
+        );
+        // The histogram arms keep their abbreviated destination keys.
+        assert_eq!(
+            expected_mirror("read_count_hist"),
+            "host_reads: hosting.read_count_hist,"
+        );
+    }
+}
+
+/// The ring's selection functions are where candidate logging is wired to the
+/// op that routed; the router- and writer-level tests cannot see a wrong op, a
+/// dropped `record` call or a probe that logs.
+#[cfg(test)]
+pub(crate) mod candidate_log_wiring_tests {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    use freenet_stdlib::prelude::{CodeHash, ContractInstanceId, ContractKey};
+
+    use crate::node::network_status::OpType;
+    use crate::operations::route_attempt::driver_test_support::op_manager_with_peers;
+    use crate::ring::{Location, PeerKeyLocation};
+    use crate::router::dataset::{self, DecisionLog, RoutingDataset, UncapturedReason};
+    use crate::router::{RouteEvent, RouteOutcome};
+
+    pub(crate) fn recorder() -> (Arc<RoutingDataset>, tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routing.jsonl");
+        let recorder = RoutingDataset::open(&path, dataset::DEFAULT_MAX_BYTES).unwrap();
+        (Arc::new(recorder), dir, path)
+    }
+
+    /// Every line up to and including a sentinel written last, so an extra
+    /// trailing line cannot be missed by reading too early.
+    pub(crate) fn lines_through_sentinel(
+        recorder: &RoutingDataset,
+        path: &std::path::Path,
+    ) -> Vec<serde_json::Value> {
+        const SENTINEL_T_MS: u64 = 424_242;
+        recorder.record_peers(SENTINEL_T_MS, Vec::new());
+        dataset::lines_eventually(path, |lines| {
+            lines
+                .iter()
+                .any(|line| line["kind"] == "peers" && line["t_ms"] == SENTINEL_T_MS)
+        })
+    }
+
+    /// Enough routing history that decisions are prediction-based.
+    fn warm_router(ring: &super::Ring, peers: &[PeerKeyLocation], contract: Location) {
+        let mut router = ring.router.write();
+        for i in 0..120 {
+            router.add_event(RouteEvent {
+                peer: peers[i % peers.len()].clone(),
+                contract_location: contract,
+                outcome: if i % 7 == 0 {
+                    RouteOutcome::Failure
+                } else {
+                    RouteOutcome::SuccessUntimed
+                },
+                op_type: Some(OpType::Get),
+            });
+        }
+    }
+
+    fn selected_at(line: &serde_json::Value, position: usize) -> String {
+        line["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["selected_position"] == position)
+            .unwrap_or_else(|| panic!("no candidate at position {position}: {line}"))["peer"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn contract_key() -> ContractKey {
+        ContractKey::from_id_and_code(ContractInstanceId::new([7u8; 32]), CodeHash::new([0u8; 32]))
+    }
+
+    #[tokio::test]
+    async fn ring_selections_log_only_routing_decisions_with_their_op() {
+        let (op_manager, _rx, peers, _guards) = op_manager_with_peers("candidate-wiring", 5).await;
+        let ring = &op_manager.ring;
+        let key = contract_key();
+        let contract = Location::from(&key);
+        warm_router(ring, &peers, contract);
+        let (recorder, _dir, path) = recorder();
+        let none: Vec<SocketAddr> = Vec::new();
+        let all: Vec<SocketAddr> = peers.iter().filter_map(|p| p.socket_addr()).collect();
+
+        let (subscribe, put, get) = {
+            let _log = dataset::force_candidate_log(recorder.clone(), 1.0);
+            // Probes and pre-selections log nothing.
+            assert_eq!(
+                ring.k_closest_potentially_hosting(
+                    DecisionLog::Unlogged,
+                    key.id(),
+                    none.as_slice(),
+                    2
+                )
+                .len(),
+                2
+            );
+            assert!(
+                ring.closest_potentially_hosting(DecisionLog::Unlogged, &key, none.as_slice())
+                    .is_some()
+            );
+            // A selection of nobody routes nowhere and logs nothing.
+            assert!(
+                ring.k_closest_potentially_hosting(
+                    DecisionLog::Joinable(OpType::Get),
+                    key.id(),
+                    all.as_slice(),
+                    1
+                )
+                .is_empty()
+            );
+            let subscribe = ring.k_closest_potentially_hosting(
+                DecisionLog::Joinable(OpType::Subscribe),
+                key.id(),
+                none.as_slice(),
+                2,
+            );
+            let put = ring
+                .closest_potentially_hosting(
+                    DecisionLog::Joinable(OpType::Put),
+                    &key,
+                    none.as_slice(),
+                )
+                .unwrap();
+            let get = ring.k_closest_potentially_hosting(
+                DecisionLog::Joinable(OpType::Get),
+                key.id(),
+                none.as_slice(),
+                1,
+            );
+            (subscribe, put, get)
+        };
+        let again = {
+            // Below rate 1 the test override never draws a capture: this GET
+            // decision is uncaptured. Tied costs are shuffled, so it may pick a
+            // different peer than the capture above; every peer is made a live
+            // GET capture first, so whichever it picks is closed.
+            for peer in &peers {
+                recorder.record_decision(live_capture(peer, OpType::Get, contract));
+            }
+            let _log = dataset::force_candidate_log(recorder.clone(), 0.5);
+            let again = ring.k_closest_potentially_hosting(
+                DecisionLog::Joinable(OpType::Get),
+                key.id(),
+                none.as_slice(),
+                1,
+            );
+            assert_eq!(again.len(), 1);
+            dataset::record_bypass(
+                OpType::Subscribe,
+                contract,
+                &subscribe[0],
+                UncapturedReason::DirectedFirstHop,
+            );
+            again
+        };
+
+        let lines = lines_through_sentinel(&recorder, &path);
+        let kinds: Vec<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "start",
+                "decision",
+                "decision",
+                "decision",
+                // The live GET captures of every peer.
+                "decision",
+                "decision",
+                "decision",
+                "decision",
+                "decision",
+                "decision_uncaptured",
+                "decision_uncaptured",
+                "peers"
+            ],
+            "{lines:?}"
+        );
+
+        let (sub_line, put_line, get_line) = (&lines[1], &lines[2], &lines[3]);
+        assert_eq!(sub_line["op"], "SUBSCRIBE");
+        assert_eq!(sub_line["contract_location"], contract.as_f64());
+        assert_eq!(sub_line["k"], 2);
+        assert_eq!(sub_line["candidates_considered"], peers.len());
+        assert_eq!(selected_at(sub_line, 0), dataset::peer_hash(&subscribe[0]));
+        assert_eq!(selected_at(sub_line, 1), dataset::peer_hash(&subscribe[1]));
+
+        assert_eq!(put_line["op"], "PUT");
+        assert_eq!(put_line["k"], 1);
+        assert_eq!(selected_at(put_line, 0), dataset::peer_hash(&put));
+
+        assert_eq!(get_line["op"], "GET");
+        assert_eq!(selected_at(get_line, 0), dataset::peer_hash(&get[0]));
+
+        let (superseded, bypass) = (&lines[9], &lines[10]);
+        assert_eq!(superseded["op"], "GET");
+        assert_eq!(superseded["reason"], "sampled_out");
+        assert_eq!(
+            superseded["selected"],
+            serde_json::json!([dataset::peer_hash(&again[0])])
+        );
+        assert_eq!(bypass["op"], "SUBSCRIBE");
+        assert_eq!(bypass["reason"], "directed_first_hop");
+        assert_eq!(
+            bypass["selected"],
+            serde_json::json!([dataset::peer_hash(&subscribe[0])])
+        );
+    }
+
+    /// A router with too little history ranks by distance; the ring must say
+    /// so rather than blame sampling.
+    #[tokio::test]
+    async fn a_cold_router_decision_is_logged_as_distance_based() {
+        let (op_manager, _rx, _peers, _guards) = op_manager_with_peers("candidate-cold", 5).await;
+        let ring = &op_manager.ring;
+        let key = contract_key();
+        let contract = Location::from(&key);
+        let (recorder, _dir, path) = recorder();
+        let none: Vec<SocketAddr> = Vec::new();
+        let _log = dataset::force_candidate_log(recorder.clone(), 1.0);
+        let chosen = ring
+            .closest_potentially_hosting(DecisionLog::Unlogged, &key, none.as_slice())
+            .unwrap();
+        // Make the selection a live capture, so the uncaptured line is written.
+        recorder.record_decision(live_capture(&chosen, OpType::Put, contract));
+        let again = ring
+            .closest_potentially_hosting(DecisionLog::Joinable(OpType::Put), &key, none.as_slice())
+            .unwrap();
+        assert_eq!(again, chosen);
+
+        let lines = lines_through_sentinel(&recorder, &path);
+        let kinds: Vec<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            ["start", "decision", "decision_uncaptured", "peers"],
+            "{lines:?}"
+        );
+        assert_eq!(lines[2]["reason"], "distance_based");
+        assert_eq!(lines[2]["op"], "PUT");
+    }
+
+    /// Pacing must run on the ring's injected clock: under a paused runtime
+    /// only that clock moves, so a capture refused as paced is allowed again
+    /// once virtual time passes.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn ring_pacing_reads_the_injected_clock() {
+        let (op_manager, _rx, peers, _guards) = op_manager_with_peers("candidate-paced", 5).await;
+        let ring = &op_manager.ring;
+        let key = contract_key();
+        warm_router(ring, &peers, Location::from(&key));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routing.jsonl");
+        // A 40 KB budget released over an hour: the burst is 2.5 KB, less
+        // than one captured decision.
+        let recorder = Arc::new(
+            RoutingDataset::open_with_decisions(
+                &path,
+                dataset::DEFAULT_MAX_BYTES,
+                40_000,
+                3_600_000,
+            )
+            .unwrap(),
+        );
+        let _log = dataset::force_candidate_log(recorder.clone(), 1.0);
+        let none: Vec<SocketAddr> = Vec::new();
+        // Selecting every peer makes each call the same selection whatever
+        // order tied costs are shuffled into, so the second call's selections
+        // are live and its pacing is written as a line.
+        let get = || {
+            ring.k_closest_potentially_hosting(
+                DecisionLog::Joinable(OpType::Get),
+                key.id(),
+                none.as_slice(),
+                peers.len(),
+            )
+        };
+        let kinds = |lines: &[serde_json::Value]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|l| l["kind"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // Each call's line is awaited before the next call, so the lines pin
+        // which call was captured and which was paced.
+        assert_eq!(get().len(), peers.len());
+        dataset::lines_eventually(&path, |lines| kinds(lines) == ["start", "decision"]);
+        assert_eq!(get().len(), peers.len());
+        dataset::lines_eventually(&path, |lines| {
+            kinds(lines) == ["start", "decision", "decision_uncaptured"]
+        });
+        tokio::time::advance(std::time::Duration::from_secs(3600)).await;
+        assert_eq!(get().len(), peers.len());
+
+        let lines = lines_through_sentinel(&recorder, &path);
+        assert_eq!(
+            kinds(&lines),
+            [
+                "start",
+                "decision",
+                "decision_uncaptured",
+                "decision",
+                "peers"
+            ],
+            "{lines:?}"
+        );
+        assert_eq!(lines[2]["reason"], "paced", "the second call is paced");
+    }
+
+    /// A captured decision for `peer` alone, as a warm router would write it.
+    pub(crate) fn live_capture(
+        peer: &PeerKeyLocation,
+        op: OpType,
+        contract: Location,
+    ) -> dataset::DecisionRecord {
+        dataset::DecisionCapture {
+            contract_location: contract,
+            acting_model: dataset::RoutingModel::Legacy,
+            prediction_fallback: false,
+            k: 1,
+            candidates_available: 1,
+            prior_failure_events: 0,
+            candidates: vec![dataset::CapturedCandidate {
+                peer,
+                legacy: None,
+                hierarchical: None,
+                hierarchical_stages: dataset::HierarchicalStages::default(),
+                selected_position: Some(0),
+            }],
+        }
+        .into_record(op, 1)
+    }
 }
