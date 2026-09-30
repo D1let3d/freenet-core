@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.7</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.139</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-28</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.8</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.140</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-09-30</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -251,7 +251,7 @@ Then open `http://127.0.0.1:7509/` as usual. Three things to know:
 A ready-made `docker-compose.yml` lives in `docker/freenet-node/` in the
 source repository, alongside the full container documentation.
 
-### 2.7 Nix
+### 2.7 Nix <span class="badge badge-upd">UPDATED</span>
 
 *New in v0.2.136.* Nix is now a **supported deployment path**, not merely a way
 to get a compiler:
@@ -290,9 +290,53 @@ from there. Arguments are forwarded, so `nix run … -- --config-dir /srv/freene
 works as you'd expect. The older name `freenet-autoupdate` still works as an
 alias.
 
+**On NixOS, use the module (v0.2.140).** The flake now exports
+`nixosModules.default`, which runs the supervised, self-updating peer as a
+system service for you:
+
+```nix
+modules = [
+  ./configuration.nix
+  freenet.nixosModules.default
+  { services.freenet-node.enable = true; }
+];
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `services.freenet-node.enable` | `false` | Run the peer as `freenet-node.service`. |
+| `services.freenet-node.package` | the flake's `freenet-node` | Must provide `bin/freenet-node`; the bare `freenet` package has no supervisor. |
+| `services.freenet-node.extraArgs` | `[ ]` | Passed through to `freenet network`. |
+
+State lives in `/var/lib/freenet` (mode 0700, because the config directory holds
+the node's keys), which is also the `freenet` user's home.
+
+> **The name trap.** It is `services.freenet-node`, **not** `services.freenet`.
+> In nixpkgs, `services.freenet` is an alias for `services.hyphanet` — the
+> unrelated Java project once called Freenet. Enabling the wrong one gives you a
+> working service for a different network, with nothing to tell you so.
+
+**If you write the systemd unit yourself, keep the service user's `home`.** The
+node keeps its auto-update state — the crash-probation marker, the known-good
+rollback snapshot, the known-bad version pin — under the service user's home. A
+NixOS user declared without `home` gets `/var/empty`, where every write fails
+and **crash-loop rollback (§13) is silently off**. Since v0.2.140 the node falls
+back to `$STATE_DIRECTORY` when the home is unusable, but only systemd sets that
+variable — so a manual `freenet update` run from a shell must be given it
+explicitly, or it will neither see the node's known-bad pin nor clear its
+failure counter:
+
+```bash
+sudo -u freenet STATE_DIRECTORY=/var/lib/freenet /var/lib/freenet/bin/freenet update
+sudo systemctl restart freenet-node   # a manual update replaces the binary, not the running process
+```
+
+Seeding from a release older than v0.2.140 runs a binary without that fallback
+first, so setting `home` is still worth doing.
+
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
+## 3. First Run and the Dashboard
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -422,7 +466,7 @@ Both orderings are now handled, so a large upload or download no longer strands
 itself on a reordered network. This is the same family as the misreporting fixes
 above: nothing you did wrong, and nothing you could have seen from the app.
 
-### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
+### 4.1 When an app asks to run in the background
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -489,6 +533,51 @@ cannot hand one app your whole node.
 > the permissions page as a record of what you have allowed *apps* to do, not as
 > a defense against your own machine. Protecting the machine itself remains the
 > machine's own job.
+
+### 4.2 Opening `freenet:` links <span class="badge badge-new">NEW</span>
+
+From **v0.2.140**, a Freenet app can be shared as a link. The *Open in Freenet*
+button on <https://freenet.org/open> produces one of the form
+`freenet:<contract-id>…`, and clicking it opens that app **in your browser,
+through your own node** — the same `http://127.0.0.1:7509/…` address you would
+reach from the dashboard.
+
+**It is set up for you.** `freenet service install` registers the link handler
+(so do the install script, the Windows setup wizard and `freenet service
+doctor`). An install that predates this release is caught up the first time the
+updated node starts — but only where the node is launched the standard way (the
+Linux *user* service, or the Windows startup entry); for anything else, run
+`freenet service url-handler register` once. How it is registered depends on the platform:
+
+| Platform | Registration |
+|---|---|
+| Linux | A desktop entry in `~/.local/share/applications/`. It becomes the default handler **only if no other handler is already set** — a choice you made is never replaced. |
+| Windows | A per-user registry entry (`HKCU`), so no administrator rights are needed. |
+| macOS | Declared by the `Freenet.app` bundle itself, which is launched if it isn't running. A bare binary outside the app bundle cannot receive links on macOS. |
+
+To opt out, run `freenet service url-handler unregister`. That removes the
+registration **and** stops the node re-adding it on start. `freenet service
+url-handler register` puts it back. Installs without the service (Nix,
+`cargo install`, a hand-run binary) use `register` to opt in.
+
+**What a link can and cannot do.** Any website can fire a `freenet:` link at
+your computer, so the handler treats every link as hostile:
+
+- A link can only choose **which contract** to open. The scheme, host and port
+  are fixed by the handler — always your own node at `127.0.0.1` — so a link
+  cannot send your browser anywhere else.
+- The link is passed to the browser as a single argument after a literal `--`,
+  never through a shell, so it cannot smuggle in extra options.
+- The handler **never starts a stopped node** (that would fight with the service
+  supervisor). If your node isn't running you get a local page saying so,
+  rather than a silent failure.
+  On macOS, opening the link launches `Freenet.app` exactly as a double-click
+  would.
+
+Links that were shared earlier in the `freenet://…` form still work.
+`freenet.org/open` now emits the form without `//`, because some desktops (KDE
+among them) lowercase what they take to be a host name, and in the `//` form
+that is the contract id, which is case-sensitive.
 
 <div class="page-break"></div>
 
@@ -1014,7 +1103,7 @@ $ freenet update --quiet    # no interactive output (for scripts)
 After a manual update, restart the service (`freenet service restart`) and run
 self-check steps 1–4.
 
-### 14.2 After a bad update
+### 14.2 After a bad update <span class="badge badge-upd">UPDATED</span>
 
 Normally you do nothing: automatic rollback (§13 step 5) handles a
 crash-looping release, and the node then simply skips that version. When a fixed
@@ -1032,6 +1121,22 @@ a crash-looping version will keep crash-looping. Recover by hand:
 2. Reinstall a known-good version: `freenet update --force`, or install a
    specific release with `FREENET_VERSION=<version>` via the installer (§2.2).
 3. Restart and run self-check steps 1–4.
+
+**If auto-update says it is LOCKED OUT.** After **three consecutive failed
+update attempts**, the node stops trying and logs a warning that begins
+*"Auto-update is LOCKED OUT"*, naming the state directory it is using. Earlier
+editions of this manual did not document this lockout at all — they should
+have, because until v0.2.140 it was **permanent**: a node that ran stably and
+never restarted would never ask again, and would drift below the network's
+compatibility floor (§7 step 7) with nothing more than one log line to show
+for it.
+
+Since **v0.2.140** the lockout expires: a locked-out node retries **at most once
+a day**, so once whatever broke its installs is fixed, it recovers by itself. To
+update immediately and reset the counter, run `freenet update` yourself. If
+updates keep failing, the most common cause is a binary path that the service
+account cannot write to — for example, a hand-installed binary the service user
+doesn't own. (On NixOS, see the `STATE_DIRECTORY` note in §2.7.)
 
 ### 14.3 Keeping an *unsupervised* node current
 
@@ -1175,7 +1280,7 @@ The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
+## 18. First Steps as a Developer
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -1429,7 +1534,7 @@ service but keep the binary (e.g. switching to hand-run mode), use
 
 # Appendices
 
-## Appendix A — CLI Quick Reference
+## Appendix A — CLI Quick Reference <span class="badge badge-upd">UPDATED</span>
 
 | Command | One-liner |
 |---|---|
@@ -1443,7 +1548,9 @@ service but keep the binary (e.g. switching to hand-run mode), use
 | `freenet service logs [--err]` | Follow logs. |
 | `freenet service doctor [--system]` | Repair a wedged install. |
 | `freenet service report [--local PATH] [-m MSG]` | Diagnostic report. |
-| `freenet update [--check] [--force] [--quiet]` | Update the binary. |
+| `freenet update [--check] [--force] [--quiet]` | Update the binary; also resets an auto-update lockout (§14.2). |
+| `freenet open -- <link>` | Open a `freenet:` link through your node (what the OS calls for you; §4.2). |
+| `freenet service url-handler register/unregister` | Opt in to or out of `freenet:` link handling (§4.2). |
 | `freenet secrets status/provision/rotate/migrate/snapshots/restore/export/import` | Key & secret management (§16). |
 | `freenet uninstall [--purge | --keep-data] [--system]` | Remove Freenet. |
 | `fdev …` | Developer tool (§18). |
@@ -1500,6 +1607,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.8** | 2026-09-30 | 0.2.140 | `freenet:` links open apps through your own node (new §4.2), with how they are registered and what a hostile link cannot do; a NixOS module and its `services.freenet` name trap; the auto-update lockout — now documented at all, and no longer permanent. |
 | **1.7** | 2026-09-28 | 0.2.139 | Periodic wake-ups: a granted app can now also run on a schedule, under the same permission re-checked at every fire and the same budget, bounded by the node at 60 s–7 days and four schedules per delegate; the permissions page gains a way back to the dashboard. |
 | **1.6** | 2026-09-25 | 0.2.138 | App permissions: a delegate may ask to run with no tab open, the node (not the app) asks once, the answer belongs to the app, "Not now" holds for a week, and `/permission/apps` revokes; delegate manifests for authors; a stranded-transfer race fixed. |
 | **1.5** | 2026-09-24 | 0.2.137 | Delegate subscriptions survive a node restart (with a warm-up and two ceilings); a missing app asset answers 404 instead of a 500 that leaked an OS error, and a new §11.7 for the case only the log can explain; typed `DelegateError::Missing` for network-mode clients. |
@@ -1509,8 +1617,18 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.7 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.8 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §2.7 Nix | UPDATED | NixOS module `services.freenet-node` and its options; the trap that `services.freenet` is nixpkgs' alias for Hyphanet; keep the service user's `home`, or crash-loop rollback is silently off; `STATE_DIRECTORY` fallback and the manual-update invocation that needs it | v0.2.140 |
+| §4.2 Opening `freenet:` links | NEW | Link handler registration per platform (never replaces a handler you chose), opt-out that sticks, and what a hostile link cannot do: fixed local host and port, no shell, never starts a stopped node | v0.2.140 |
+| §14.2 After a bad update | UPDATED | The auto-update lockout after three consecutive failures, previously undocumented here and previously permanent, now retries at most daily; `freenet update` resets it; the usual cause | v0.2.140; editorial (omission) |
+| Appendix A | UPDATED | `freenet open`, `freenet service url-handler register/unregister`, and `freenet update` as the lockout reset | v0.2.140 |
+
+**Revision 1.7 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1600,14 +1718,15 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:79%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:82%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:85%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:88%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:91%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:94%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:97%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:100%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:77%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:80%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:83%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:86%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:89%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:92%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:95%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:97%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1617,7 +1736,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.7 · covers Freenet v0.2.139 ·
+<p class="footer-note">Freenet User Manual rev 1.8 · covers Freenet v0.2.140 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
