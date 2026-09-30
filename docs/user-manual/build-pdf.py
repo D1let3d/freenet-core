@@ -107,13 +107,19 @@ hr { border: none; border-top: 1px solid var(--rule); margin: 1.5em 0; }
 
 /* Growth chart */
 .growth-chart { margin: 1em 0; }
-.growth-row { display: flex; align-items: center; margin: .35em 0; }
+/* Grid, not flex: each bar's inline width is a percentage of the TRACK
+   (column 2), not of the whole row. With flex the percentage included the
+   6em label, so every bar above ~88% was clamped to the same edge and the
+   chart stopped showing growth. */
+.growth-row { display: grid; grid-template-columns: 6em 1fr; align-items: center;
+  margin: .35em 0; }
 .growth-label { width: 6em; font-family: "Inter", Arial, sans-serif; font-size: .85rem;
   color: var(--muted); flex-shrink: 0; }
 .growth-bar {
   background: linear-gradient(90deg, var(--accent), var(--accent2));
   color: #fff; font-family: "Inter", Arial, sans-serif; font-size: .8rem;
   padding: .3em .8em; border-radius: 4px; white-space: nowrap;
+  justify-self: start; box-sizing: border-box;
 }
 .footer-note { color: var(--muted); font-size: .85rem; text-align: center; margin-top: 2em; }
 """
