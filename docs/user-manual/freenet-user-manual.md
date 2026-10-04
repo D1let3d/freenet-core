@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.8</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.140</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-09-30</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.9</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.141</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-04</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -251,7 +251,7 @@ Then open `http://127.0.0.1:7509/` as usual. Three things to know:
 A ready-made `docker-compose.yml` lives in `docker/freenet-node/` in the
 source repository, alongside the full container documentation.
 
-### 2.7 Nix <span class="badge badge-upd">UPDATED</span>
+### 2.7 Nix
 
 *New in v0.2.136.* Nix is now a **supported deployment path**, not merely a way
 to get a compiler:
@@ -336,7 +336,7 @@ first, so setting `home` is still worth doing.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard
+## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -366,6 +366,14 @@ linking to `/permission/apps` — the page listing every permission you have
 granted an app, with a button to revoke any of them. §4.1 explains what those
 permissions are and when you will be asked for one. (That page had no way back
 to the dashboard when it shipped; v0.2.139 adds the link.)
+
+**Red no longer means "normal" (v0.2.141).** Until this release the dashboard
+painted some perfectly ordinary states in warning colours: the operations
+failure count was always red, *even when it read 0*, and a contract marked
+"next to evict" was orange on a node far below its budget. Both are now neutral.
+A full hosting cache is labelled *"Full is normal here"* rather than coloured,
+because a cache is supposed to fill. The practical rule: if you learned to
+ignore red on the dashboard, unlearn it. Red now means something.
 
 If you skipped the service, you can run a node in the foreground:
 
@@ -534,7 +542,7 @@ cannot hand one app your whole node.
 > a defense against your own machine. Protecting the machine itself remains the
 > machine's own job.
 
-### 4.2 Opening `freenet:` links <span class="badge badge-new">NEW</span>
+### 4.2 Opening `freenet:` links
 
 From **v0.2.140**, a Freenet app can be shared as a link. The *Open in Freenet*
 button on <https://freenet.org/open> produces one of the form
@@ -644,7 +652,7 @@ macOS/Windows paths.
 > copies alongside your live config is safe again — but if you have been relying
 > on a differently named file being found, rename it to `config.toml`.
 
-### 6.2 Options you're most likely to touch
+### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -655,6 +663,7 @@ Every option can be given as a CLI flag or an environment variable:
 | `--address` | `::` (dual-stack) | Bind address for the network listener. |
 | `--log-level` (`LOG_LEVEL`) | `info` | `error`, `warn`, `info`, `debug`, `trace`. |
 | `--max-hosting-storage` | **RAM ÷ 8**, clamped 128 MiB–1 GiB | Budget for hosted contract **disk** state; least-valuable contracts are evicted beyond this (§17). Not a flat 1 GiB — 1 GiB is the *cap*. |
+| `--hosting-mem-share` (`HOSTING_MEM_SHARE`) | `0.125` (⅛) | Share of the node's **memory limit** that hosted contracts may hold in **RAM** — the RAM counterpart of `--max-hosting-storage` (§17). Never below 64 MiB; above `0.5` draws a startup warning. |
 | `--max-blocking-threads` | 2×CPU (4–32) | Worker threads for WASM execution. |
 | `--telemetry-enabled` (`FREENET_TELEMETRY_ENABLED`) | on during alpha | Sends operation timing and network topology to the project's dashboard. Contract content is never included. |
 | `--telemetry-endpoint` (`FREENET_TELEMETRY_ENDPOINT`) | `http://telemetry.freenet.org:4318` | Where that telemetry goes (see the note below). |
@@ -1103,7 +1112,7 @@ $ freenet update --quiet    # no interactive output (for scripts)
 After a manual update, restart the service (`freenet service restart`) and run
 self-check steps 1–4.
 
-### 14.2 After a bad update <span class="badge badge-upd">UPDATED</span>
+### 14.2 After a bad update
 
 Normally you do nothing: automatic rollback (§13 step 5) handles a
 crash-looping release, and the node then simply skips that version. When a fixed
@@ -1220,7 +1229,7 @@ contract state, caches, the binary — is replaceable; the secrets are not.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning
+## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
@@ -1238,13 +1247,37 @@ Other useful dials:
 - `--max-blocking-threads` — WASM execution parallelism (default 2×CPU cores,
   clamped 4–32).
 
-Since v0.2.126–0.2.127 the memory side is smarter than a fixed ceiling: the
-node bounds overall peer memory (~2 GiB cap), sizes hosting eviction pressure
-from **live memory measurements** rather than a hardcoded per-contract
-overhead estimate, and bounds the compiled-WASM cache by actual disk headroom
-as well as RAM. In practice this means a node on a small VPS behaves itself
-without hand-tuning, and eviction responds to real pressure instead of
-worst-case guesses.
+Since v0.2.126–0.2.127 the node bounds overall peer memory (~2 GiB cap) and
+bounds the compiled-WASM cache by actual disk headroom as well as RAM.
+
+> **Correction.** Earlier editions of this section said that since v0.2.126 the
+> node sized hosting eviction from *"live memory measurements rather than a
+> hardcoded per-contract overhead estimate."* That overstated it. Until
+> **v0.2.141**, the RAM each hosted contract cost was charged at a **fixed
+> estimate of 1 MiB per contract**. Only from v0.2.141 does the node count what
+> hosted contracts actually hold in memory.
+
+**The RAM side has its own dial: `--hosting-mem-share` (v0.2.141).** Hosting
+costs memory as well as disk — mostly the summaries neighbouring peers send so
+your node can keep each hosted contract current. Two things changed in
+v0.2.141:
+
+- **It is measured, not estimated.** The node now counts those bytes,
+  including storing summaries that several neighbours send identically only
+  once, instead of assuming 1 MiB for every contract. A node holding many small
+  contracts was previously charged far more than they cost.
+- **The budget is a share of the node's memory limit.** That limit is physical
+  RAM, or a smaller cgroup / systemd `MemoryMax` limit when one applies — so a
+  container or a capped service is sized against what it is actually allowed.
+  The default share is **⅛ (`0.125`)**, never below 64 MiB. Past the budget, the
+  node stops hosting its least-demanded contracts.
+
+The two dials are independent: `--max-hosting-storage` bounds state **on disk**,
+`--hosting-mem-share` bounds what hosting holds **in RAM**, and either one can
+be the limit that binds first. Raise `--hosting-mem-share` on a machine with
+memory to spare. The node warns at startup above `0.5`, because the node's other
+caches already take about a quarter of the memory limit and the runtime needs
+about a tenth; above one half there is little left for anything else.
 
 **Two corrections landed in v0.2.136, and earlier revisions of this manual had
 both of them wrong.**
@@ -1273,8 +1306,8 @@ budget is min(0.5 × 40 GiB, 32 GiB) = 20 GiB, so set `--max-hosting-storage` to
 about **17 GiB**. On a larger disk the 32 GiB cap binds unless you raise
 `--max-hosting-disk` too. Leave more headroom if your node hosts many contracts
 with distinct code, since WASM grows with those. Raising this dial does not make
-your node take on more contracts than its memory can hold — that ceiling is set
-separately.
+your node take on more contracts than its memory can hold — that ceiling is
+`--hosting-mem-share`, above.
 
 The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
@@ -1534,7 +1567,7 @@ service but keep the binary (e.g. switching to hand-run mode), use
 
 # Appendices
 
-## Appendix A — CLI Quick Reference <span class="badge badge-upd">UPDATED</span>
+## Appendix A — CLI Quick Reference
 
 | Command | One-liner |
 |---|---|
@@ -1607,6 +1640,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.9** | 2026-10-04 | 0.2.141 | Hosting RAM is now measured rather than charged at 1 MiB per contract, under a `--hosting-mem-share` dial this manual had never documented; a correction to §17, which had claimed live measurement since v0.2.126; the dashboard stops painting normal states red. |
 | **1.8** | 2026-09-30 | 0.2.140 | `freenet:` links open apps through your own node (new §4.2), with how they are registered and what a hostile link cannot do; a NixOS module and its `services.freenet` name trap; the auto-update lockout — now documented at all, and no longer permanent. |
 | **1.7** | 2026-09-28 | 0.2.139 | Periodic wake-ups: a granted app can now also run on a schedule, under the same permission re-checked at every fire and the same budget, bounded by the node at 60 s–7 days and four schedules per delegate; the permissions page gains a way back to the dashboard. |
 | **1.6** | 2026-09-25 | 0.2.138 | App permissions: a delegate may ask to run with no tab open, the node (not the app) asks once, the answer belongs to the app, "Not now" holds for a week, and `/permission/apps` revokes; delegate manifests for authors; a stranded-transfer race fixed. |
@@ -1617,8 +1651,17 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.8 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.9 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard | UPDATED | Normal states no longer painted as alarms: the failure count is no longer red at 0, "next to evict" no longer orange far under budget, and a full cache reads "Full is normal here" | v0.2.141 |
+| §6.2 Options | UPDATED | `--hosting-mem-share` added: share of the node's memory limit hosting may hold in RAM, default ⅛, floor 64 MiB, warning above 0.5 | v0.2.141; editorial (omission) |
+| §17 Tuning | UPDATED | RAM side of hosting measured rather than estimated at 1 MiB per contract, sized against the cgroup-aware memory limit, independent of the disk dial; corrects this section's earlier claim of live measurement since v0.2.126 | v0.2.141; editorial (correction) |
+
+**Revision 1.8 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1718,15 +1761,16 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:77%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:80%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:83%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:86%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:89%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:92%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:95%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:97%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:75%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:78%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:81%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:84%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:87%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:90%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:93%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:95%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:98%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1736,7 +1780,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.8 · covers Freenet v0.2.140 ·
+<p class="footer-note">Freenet User Manual rev 1.9 · covers Freenet v0.2.141 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
