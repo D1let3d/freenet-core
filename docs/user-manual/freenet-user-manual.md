@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.9</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.141</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-04</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.10</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.142</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-06</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -352,14 +352,22 @@ success rate** (real fetch outcomes, not a synthetic health verdict), offers a
 follows your OS light/dark theme, and its tables filter and collapse for small
 screens.
 
-**Per-peer detail pages arrived in v0.2.136.** Alongside the contract pages,
-the dashboard now opens a page for each peer your node is connected to, showing
-how well the router's predictions about that peer have actually held up. The
-headline reading is a **skill score**: how much better the router's estimates
-are than assuming nothing. A negative score is labelled in words —
-*"worse than assuming nothing"* — rather than left as a bare `-0.43` for you to
-interpret, which is the right call for a number most people meet for the first
-time on that page.
+**Peer pages, and the new `/routing` page (v0.2.142).** Each peer your node is
+connected to has its own page (`/peer/{address}`, since v0.2.136). In v0.2.142
+it was redesigned around one question: *what has your node learned about this
+peer?* It compares the peer with what distance alone would predict — how much
+slower or faster it replies, how often its requests fail — and with your
+node's other peers, and it shows how often the peer was a candidate in a
+routing decision and how often it was actually chosen. Until a peer has
+handled enough requests, the page says so plainly (*"Still learning about this
+peer"*) instead of drawing a confident chart from a handful of data points.
+
+The network-wide picture moved to a new page, **`/routing`**: how much the
+router has learned overall and how good its predictions are across all peers.
+That is now where the **skill score** lives — how much better the router's
+estimates are than assuming nothing, with a negative score still spelled out in
+words rather than shown as a bare `-0.43`. *Earlier editions described that
+score as the headline of each peer page; since v0.2.142 it isn't.*
 
 Since v0.2.138 the dashboard also carries an **Apps and permissions** card,
 linking to `/permission/apps` — the page listing every permission you have
@@ -668,7 +676,13 @@ Every option can be given as a CLI flag or an environment variable:
 | `--telemetry-enabled` (`FREENET_TELEMETRY_ENABLED`) | on during alpha | Sends operation timing and network topology to the project's dashboard. Contract content is never included. |
 | `--telemetry-endpoint` (`FREENET_TELEMETRY_ENDPOINT`) | `http://telemetry.freenet.org:4318` | Where that telemetry goes (see the note below). |
 | `--otel-telemetry-enabled` (`FREENET_OTEL_TELEMETRY_ENABLED`) | `false` | Export **your own** node's metrics to **your own** OpenTelemetry collector (§19). Entirely separate from `--telemetry-enabled`. |
-| `FREENET_ROUTING_HIERARCHICAL` | on | The hierarchical routing estimator, **enabled by default since v0.2.136**. Set to `0` to fall back to the previous estimator. |
+| `FREENET_ROUTING_HIERARCHICAL` | *(obsolete)* | **No effect since v0.2.142.** The hierarchical estimator always routes, and the older routing stack this switch used to select has been removed, so there is no longer a way back to it. A node that still sets the variable logs a warning saying so. Remove it from your environment or unit file. |
+
+> **Don't reach for `FREENET_ROUTING_FALLBACK_ISOTONIC` as a replacement.** It
+> sounds like the old switch's successor, but it is an *emergency* fallback that
+> routes on a configuration no release has ever shipped as a whole — not the old
+> router. The node warns at startup while it is on. Leave it unset unless a
+> developer asks you to set it for a specific problem.
 
 > **The project telemetry endpoint moved in v0.2.134**, from
 > `nova.locut.us:4318` to `telemetry.freenet.org:4318` — a role-based name, so
@@ -1229,7 +1243,7 @@ contract state, caches, the binary — is replaceable; the secrets are not.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
+## 17. Storage and Resource Tuning
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
@@ -1640,6 +1654,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.10** | 2026-10-06 | 0.2.142 | `FREENET_ROUTING_HIERARCHICAL` no longer does anything — the old router it could select is gone, and the manual's "set to 0 to fall back" was now false; the fallback-sounding variable that is *not* a replacement; peer pages redesigned around what the node learned, with the skill score moved to a new `/routing` page. |
 | **1.9** | 2026-10-04 | 0.2.141 | Hosting RAM is now measured rather than charged at 1 MiB per contract, under a `--hosting-mem-share` dial this manual had never documented; a correction to §17, which had claimed live measurement since v0.2.126; the dashboard stops painting normal states red. |
 | **1.8** | 2026-09-30 | 0.2.140 | `freenet:` links open apps through your own node (new §4.2), with how they are registered and what a hostile link cannot do; a NixOS module and its `services.freenet` name trap; the auto-update lockout — now documented at all, and no longer permanent. |
 | **1.7** | 2026-09-28 | 0.2.139 | Periodic wake-ups: a granted app can now also run on a schedule, under the same permission re-checked at every fire and the same budget, bounded by the node at 60 s–7 days and four schedules per delegate; the permissions page gains a way back to the dashboard. |
@@ -1651,8 +1666,16 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.9 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.10 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard | UPDATED | Peer pages redesigned around what the node learned about each peer versus distance alone and versus other peers; network-wide prediction quality, including the skill score, moved to new `/routing`. Replaces this section's rev 1.4 description of the skill score as the peer page's headline | v0.2.142 |
+| §6.2 Options | UPDATED | `FREENET_ROUTING_HIERARCHICAL` is obsolete and inert (legacy routing stack removed), replacing the now-false "set to 0 to fall back"; warning that `FREENET_ROUTING_FALLBACK_ISOTONIC` is an emergency fallback, not the old router | v0.2.142 |
+
+**Revision 1.9 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1761,16 +1784,17 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:75%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:78%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:81%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:84%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:87%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:90%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:93%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:95%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:98%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:73%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:76%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:79%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:82%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:85%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:88%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:91%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:94%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:98%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1780,7 +1804,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.9 · covers Freenet v0.2.141 ·
+<p class="footer-note">Freenet User Manual rev 1.10 · covers Freenet v0.2.142 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
