@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.10</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.142</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-06</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.11</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.143</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-10</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -361,6 +361,12 @@ node's other peers, and it shows how often the peer was a candidate in a
 routing decision and how often it was actually chosen. Until a peer has
 handled enough requests, the page says so plainly (*"Still learning about this
 peer"*) instead of drawing a confident chart from a handful of data points.
+Since v0.2.143 the same plain speech covers the opposite case: when your node
+has enough data but sees **no measurable difference** between its peers, the
+page says exactly that — *"No measurable difference between your peers'
+response times yet"* (and likewise for failure rates) — rather than drawing a
+chart that implies a ranking the node hasn't learned. That is normal on a
+young or quiet node, not a fault.
 
 The network-wide picture moved to a new page, **`/routing`**: how much the
 router has learned overall and how good its predictions are across all peers.
@@ -660,7 +666,7 @@ macOS/Windows paths.
 > copies alongside your live config is safe again — but if you have been relying
 > on a differently named file being found, rename it to `config.toml`.
 
-### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
+### 6.2 Options you're most likely to touch
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -861,7 +867,7 @@ The self-check is designed so that **every failing step points at a fix**:
 - Anything you can't classify → generate a diagnostic report (§10) and ask for
   help (§12).
 
-## 10. Diagnostic Reports
+## 10. Diagnostic Reports <span class="badge badge-upd">UPDATED</span>
 
 When you need help — or want a snapshot of node health for your own records —
 generate a diagnostic report:
@@ -896,6 +902,21 @@ licence to put secrets in your config, which is uploaded as-is. If the node isn'
 the report is generated, the report says *why* (connection refused, timeout, …)
 rather than silently omitting network status — that distinction itself is a
 useful diagnostic.
+
+**Where reports go, and uploading from behind a corporate proxy (v0.2.143).**
+Reports now upload to `telemetry.freenet.org`, the same role-based name the
+telemetry endpoint moved to in v0.2.134 (older releases still use the previous
+address, which the server keeps open for them). Uploading a report is also the
+one thing your node now does that **trusts your operating system's certificate
+store** as well as Freenet's bundled one. That lets `freenet service report`
+work on networks where an administrator inspects HTTPS through a proxy whose
+certificate is installed on the machine. It is deliberately limited to reports:
+`freenet update` and auto-update still accept only the bundled certificates, so
+on such a network they keep failing until release signatures are mandatory.
+If an upload fails, the error now ends with the fallback: re-run with
+`--local <PATH>` and send the file privately to a Freenet developer — for
+example as a direct message on Matrix, not in the public room, since it holds
+your config and recent logs.
 
 <div class="page-break"></div>
 
@@ -1035,7 +1056,7 @@ arrive.
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works
+## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -1044,6 +1065,11 @@ arrive.
 > the floor, every peer refuses its connections and it is cut off. The
 > supervised auto-update pipeline below is what keeps that from ever happening
 > to you.
+>
+> **The floor rose to v0.2.122 in v0.2.143.** Releases v0.2.120 and v0.2.121
+> cannot update themselves, so the network now refuses them. A node still on
+> either of those has to be updated by hand once (§14); from v0.2.122 on, the
+> pipeline below takes over again.
 
 Freenet releases frequently, and the update system is designed so a supervised
 node **keeps itself current with zero attention from you** — while protecting
@@ -1051,11 +1077,20 @@ you from a bad release. The pipeline:
 
 1. **Detection.** The running node notices a new official release and exits
    with code **42** ("update me"). It never overwrites itself while running.
-2. **Download & verify.** The supervisor catches exit 42 and runs
-   `freenet update`, which downloads the release, checks it against the
-   release's `SHA256SUMS.txt` manifest, and **verifies the manifest's ed25519
-   signature against a public key baked into your binary**. An artifact that
-   fails verification is never installed.
+2. **Download & verify.** Since v0.2.143 the node **downloads the release
+   before it exits 42**, while it is still serving, into a cache under its
+   state directory (it keeps retrying for up to two hours, resuming a partial
+   download). The supervisor then catches exit 42 and runs `freenet update`,
+   which installs from that cache — or downloads the release itself if the
+   cache is missing or fails any check. Either way the release is checked
+   against its `SHA256SUMS.txt` manifest, and **the manifest's ed25519 signature
+   is verified against a public key baked into your binary** — a cached download
+   gets exactly the same checks as a fresh one. An artifact that
+   fails verification is never installed. *Why the move:* the install step
+   runs inside a short shutdown time limit, and on a slow connection the old
+   in-limit download could be killed part-way, restart the old version, and
+   repeat forever. Only a node already on v0.2.143 or later gets this; one on an
+   older release updates the old way one last time.
 3. **Swap & restart.** The verified binary replaces the old one (which is kept
    as the known-good fallback) and the service restarts on the new version.
 4. **Probation.** For a short period after an update the node is "on
@@ -1654,6 +1689,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.11** | 2026-10-10 | 0.2.143 | The node downloads an update before restarting, ending an endless restart loop on slow links; the network now refuses v0.2.120 and v0.2.121, which cannot update themselves; diagnostic reports go to `telemetry.freenet.org` and work behind TLS-inspecting proxies (updates still don't); the peer page says so when it sees no difference between peers. |
 | **1.10** | 2026-10-06 | 0.2.142 | `FREENET_ROUTING_HIERARCHICAL` no longer does anything — the old router it could select is gone, and the manual's "set to 0 to fall back" was now false; the fallback-sounding variable that is *not* a replacement; peer pages redesigned around what the node learned, with the skill score moved to a new `/routing` page. |
 | **1.9** | 2026-10-04 | 0.2.141 | Hosting RAM is now measured rather than charged at 1 MiB per contract, under a `--hosting-mem-share` dial this manual had never documented; a correction to §17, which had claimed live measurement since v0.2.126; the dashboard stops painting normal states red. |
 | **1.8** | 2026-09-30 | 0.2.140 | `freenet:` links open apps through your own node (new §4.2), with how they are registered and what a hostile link cannot do; a NixOS module and its `services.freenet` name trap; the auto-update lockout — now documented at all, and no longer permanent. |
@@ -1666,8 +1702,17 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.10 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.11 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard | UPDATED | Peer page states "No measurable difference between your peers' …" instead of charting a ranking the node has not learned | v0.2.143 |
+| §10 Diagnostic reports | UPDATED | Reports upload to `telemetry.freenet.org`; report upload alone also trusts the OS certificate store, so it works behind TLS-inspecting proxies while updates do not; failed uploads now name the `--local` fallback | v0.2.143 |
+| §13 Auto-update | UPDATED | Release downloaded and cached before exit 42 (up to 2 h, resumable, re-verified at install), fixing the slow-link restart loop; `min-compatible-version` floor raised to v0.2.122, refusing v0.2.120–0.2.121 | v0.2.143 |
+
+**Revision 1.10 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1784,17 +1829,18 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:73%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:76%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:79%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:82%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:85%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:88%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:91%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:94%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:98%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:70%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:73%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:76%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:79%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:82%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:85%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:88%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:91%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1804,7 +1850,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.10 · covers Freenet v0.2.142 ·
+<p class="footer-note">Freenet User Manual rev 1.11 · covers Freenet v0.2.143 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
