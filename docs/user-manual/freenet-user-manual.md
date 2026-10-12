@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.11</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.143</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-10</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.12</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.144</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-12</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -336,7 +336,7 @@ first, so setting `home` is still worth doing.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
+## 3. First Run and the Dashboard
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -867,7 +867,7 @@ The self-check is designed so that **every failing step points at a fix**:
 - Anything you can't classify → generate a diagnostic report (§10) and ask for
   help (§12).
 
-## 10. Diagnostic Reports <span class="badge badge-upd">UPDATED</span>
+## 10. Diagnostic Reports
 
 When you need help — or want a snapshot of node health for your own records —
 generate a diagnostic report:
@@ -937,7 +937,7 @@ your config and recent logs.
    automatically** to the previous known-good version (§14.2). If crashes are
    unrelated to an update, capture a report (§10) and ask for help (§12).
 
-### 11.2 Port already in use / exit code 43 / dashboard unreachable
+### 11.2 Port already in use / exit code 43 / dashboard unreachable <span class="badge badge-upd">UPDATED</span>
 
 > **Restarting immediately after a stop is more reliable in v0.2.136.** The
 > check for "is another node already running?" used to be fooled by the socket
@@ -951,6 +951,18 @@ your config and recent logs.
   if the conflict persists, a *different* application owns the port — find it
   (`ss -ulpn | grep 31337` on Linux) and either stop it or move Freenet with
   `--network-port`.
+- **Since v0.2.144 the Linux service also clears a leftover node on the *same*
+  version.** Before, its start-up check only stopped an orphaned
+  `freenet network` running an *older* release. A same-version leftover — for
+  example a node you started by hand that kept running after you logged out —
+  was spared, so the service started, found the port taken, and stood down,
+  leaving that unsupervised node running. Now any orphaned `freenet network`
+  of your own user is stopped first, whatever its version, except one started
+  with its own `--ws-api-port` or `--config-dir` (a deliberately separate
+  instance) or one that another systemd service is running. The log line to
+  look for is `freenet pre-flight: stopping orphaned node <pid>`. An existing
+  unit picks this up on its own: the next update rewrites a unit file that
+  differs from the current template.
 - Dashboard specifically unreachable while the node runs: confirm the WS API
   port (default 7509) wasn't customized, and that you're browsing from the same
   machine — the API binds to localhost.
@@ -995,7 +1007,7 @@ The node raises its own file-descriptor limit at startup to the kernel hard
 limit automatically. If you still see `EMFILE`/fd errors on an unusual setup,
 raise the hard limit for the service (systemd: `LimitNOFILE=`), then restart.
 
-### 11.6 Disk usage growing
+### 11.6 Disk usage growing <span class="badge badge-upd">UPDATED</span>
 
 Hosted contract state is bounded (default 1 GiB; overall disk budget is
 additionally capped — §17) and evicted least-valuable-first. Since v0.2.130,
@@ -1006,6 +1018,20 @@ while chasing an intermittent fault). The compiled-WASM cache is also now
 bounded by disk headroom, not just RAM (v0.2.126). If disk still grows
 unboundedly, check the data directory with `du` and file an issue — nothing is
 supposed to grow without a budget anymore.
+
+**Disk the "Disk used" figure leaves out (v0.2.144).** On the dashboard's
+hosting card, hover over **Disk used** for its breakdown. Besides state, WASM
+and the compile cache — what the figure counts against the disk budget — it now
+lists two things your node measures but does **not** count:
+
+- **The database file.** Contract state lives inside it, so it is normally
+  larger than the state figure; the tooltip says by about how much. That
+  difference is dead space, other tables, database overhead, and any backup
+  left by a migration. A large gap explains a `du` total well above "Disk used".
+- **The webapp cache**, which is shared by every node run as the same user.
+
+Either reads "not measured" until the node has first looked at it. Neither is
+charged against the disk budget yet, so a budget alone does not bound them.
 
 ### 11.7 An app loads, but parts of it are missing
 
@@ -1056,7 +1082,7 @@ arrive.
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
+## 13. How Auto-Update Works
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -1689,6 +1715,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.12** | 2026-10-12 | 0.2.144 | The Linux service now clears a leftover node on the same version too, instead of standing down beside it; the dashboard names the disk "Disk used" leaves out — the database file and its dead space, and the shared webapp cache. |
 | **1.11** | 2026-10-10 | 0.2.143 | The node downloads an update before restarting, ending an endless restart loop on slow links; the network now refuses v0.2.120 and v0.2.121, which cannot update themselves; diagnostic reports go to `telemetry.freenet.org` and work behind TLS-inspecting proxies (updates still don't); the peer page says so when it sees no difference between peers. |
 | **1.10** | 2026-10-06 | 0.2.142 | `FREENET_ROUTING_HIERARCHICAL` no longer does anything — the old router it could select is gone, and the manual's "set to 0 to fall back" was now false; the fallback-sounding variable that is *not* a replacement; peer pages redesigned around what the node learned, with the skill score moved to a new `/routing` page. |
 | **1.9** | 2026-10-04 | 0.2.141 | Hosting RAM is now measured rather than charged at 1 MiB per contract, under a `--hosting-mem-share` dial this manual had never documented; a correction to §17, which had claimed live measurement since v0.2.126; the dashboard stops painting normal states red. |
@@ -1702,8 +1729,16 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.11 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.12 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §11.2 Port already in use | UPDATED | systemd start-up check now stops an orphaned `freenet network` of the same user whatever its version (separately configured instances and other services' nodes spared); existing units refreshed by the next update | v0.2.144 |
+| §11.6 Disk usage growing | UPDATED | "Disk used" tooltip lists the measured database file (with its excess over state) and the shared webapp cache, neither of which counts against the disk budget | v0.2.144 |
+
+**Revision 1.11 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1829,18 +1864,19 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:70%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:73%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:76%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:79%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:82%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:85%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:88%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:91%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:67%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:70%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:73%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:76%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:79%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:82%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:85%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:88%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1850,7 +1886,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.11 · covers Freenet v0.2.143 ·
+<p class="footer-note">Freenet User Manual rev 1.12 · covers Freenet v0.2.144 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
