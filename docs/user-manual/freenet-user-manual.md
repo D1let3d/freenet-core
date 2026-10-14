@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.12</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.144</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-12</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.13</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.145</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-14</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -336,7 +336,7 @@ first, so setting `home` is still worth doing.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard
+## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -380,6 +380,8 @@ linking to `/permission/apps` — the page listing every permission you have
 granted an app, with a button to revoke any of them. §4.1 explains what those
 permissions are and when you will be asked for one. (That page had no way back
 to the dashboard when it shipped; v0.2.139 adds the link.)
+
+**A live bandwidth chart (since v0.2.145).** The **Data Transfer** card now has a section called *"Transfer rate, last minute"*. It charts your node's upload and download rates over the last 60 seconds, measured once a second, and shows the latest figures above the chart (*"Latest: Upload … Download …"*). This lets you see what your node is doing right now, where before you only had lifetime totals. Use it to check whether a slow app or a busy connection is Freenet's doing. On a desktop-width screen, hover over the chart to read any single second. Just after the node starts, the section reads *"Measuring transfer rates…"* until it has two readings. If the newest reading is more than 3 seconds old, the figures carry *"as of N s ago"* so you don't mistake a stalled reading for the current rate. The chart counts Freenet traffic only, as encrypted UDP datagrams without UDP or IP headers, so it will read a little lower than your router or OS counters. The rates use decimal units (1 KB/s = 1,000 bytes per second), while the card's lifetime totals above them use binary units. The measurement stays on your machine: it sends nothing to the project's telemetry, and there is nothing to configure.
 
 **Red no longer means "normal" (v0.2.141).** Until this release the dashboard
 painted some perfectly ordinary states in warning colours: the operations
@@ -556,7 +558,7 @@ cannot hand one app your whole node.
 > a defense against your own machine. Protecting the machine itself remains the
 > machine's own job.
 
-### 4.2 Opening `freenet:` links
+### 4.2 Opening `freenet:` links <span class="badge badge-upd">UPDATED</span>
 
 From **v0.2.140**, a Freenet app can be shared as a link. The *Open in Freenet*
 button on <https://freenet.org/open> produces one of the form
@@ -600,6 +602,8 @@ Links that were shared earlier in the `freenet://…` form still work.
 `freenet.org/open` now emits the form without `//`, because some desktops (KDE
 among them) lowercase what they take to be a host name, and in the `//` form
 that is the contract id, which is case-sensitive.
+
+**If your node is still connecting.** Right after the node starts, it needs a moment to join the network. If you open an app link during that time, you see a *Connecting to Freenet...* page. Since **v0.2.145**, that page stays on the app's address and tries again every few seconds for up to two minutes. The app opens by itself once the node has joined, with the link exactly as it was shared, including any parameters and `#…` part. Earlier versions sent you to the dashboard after three seconds, so you lost the link and had to open it again. If the node still hasn't connected after two minutes, you are taken to the dashboard, where you can check its status. While the page waits, your address bar may briefly show an extra `_freload=…` parameter. Freenet uses it to limit how long the retries run. It is removed once the app loads, and the app never sees it. (Retrying needs JavaScript. With JavaScript turned off, you still go to the dashboard.)
 
 <div class="page-break"></div>
 
@@ -937,7 +941,7 @@ your config and recent logs.
    automatically** to the previous known-good version (§14.2). If crashes are
    unrelated to an update, capture a report (§10) and ask for help (§12).
 
-### 11.2 Port already in use / exit code 43 / dashboard unreachable <span class="badge badge-upd">UPDATED</span>
+### 11.2 Port already in use / exit code 43 / dashboard unreachable
 
 > **Restarting immediately after a stop is more reliable in v0.2.136.** The
 > check for "is another node already running?" used to be fooled by the socket
@@ -985,7 +989,7 @@ Also remember: **unsupervised** nodes (installed with `FREENET_NO_SERVICE=1`, or
 hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 **dev/dirty builds** never auto-update by design.
 
-### 11.4 No peers / can't join the network
+### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
 
 0. **Check your version first** (v0.2.133): the transport handshake enforces a
    minimum compatible version, so a node that is too far out of date is
@@ -999,7 +1003,8 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 3. Check the log for gateway errors (`freenet service logs`). The node fetches
    the gateway index from `https://freenet.org/keys/gateways.toml`; if that
    fetch fails it falls back to the cached `gateways.toml` in your config dir.
-4. Still stuck → diagnostic report + ask in Matrix (§12).
+4. **Did you ever run `freenet local` on this machine?** (fixed since v0.2.145) Local mode and network mode use the same `config.toml`. Older `freenet local` runs saved a loopback address there as `network-address` (`::1`, or `127.0.0.1` in early releases). The next `freenet network` boot read it back and listened only on loopback, where no gateway can reach it, so the node never found any peers. Since v0.2.145, a normal (non-gateway) node ignores a stored `network-address` of exactly `::1` or `127.0.0.1`. It listens on all interfaces instead (`::`, or `0.0.0.0` for an IPv4 value) and fixes `config.toml` for you. On that one boot the log shows a warning that starts `Ignoring network-address ... from config.toml`. You don't need to do anything. If you really do want a loopback bind, for example on a private test network, pass `--network-address` (or set `NETWORK_ADDRESS`) together with `--skip-load-from-network`, both after the subcommand. `--skip-load-from-network` is remembered once set; the address flag is not and has to be passed every time. Gateways, and any other loopback address such as `127.0.0.5`, are left alone.
+5. Still stuck → diagnostic report + ask in Matrix (§12).
 
 ### 11.5 "No file descriptors available" or resource errors
 
@@ -1007,7 +1012,7 @@ The node raises its own file-descriptor limit at startup to the kernel hard
 limit automatically. If you still see `EMFILE`/fd errors on an unusual setup,
 raise the hard limit for the service (systemd: `LimitNOFILE=`), then restart.
 
-### 11.6 Disk usage growing <span class="badge badge-upd">UPDATED</span>
+### 11.6 Disk usage growing
 
 Hosted contract state is bounded (default 1 GiB; overall disk budget is
 additionally capped — §17) and evicted least-valuable-first. Since v0.2.130,
@@ -1599,7 +1604,7 @@ assertion of your node's identity to wherever it is pointed. The verification
 rules a collector must implement are in `docs/otel-metrics.md` in the source
 tree.
 
-### 19.4 What gets exported, and how your node is identified
+### 19.4 What gets exported, and how your node is identified <span class="badge badge-upd">UPDATED</span>
 
 Instruments cover transport (bytes, packets, transfers, NAT traversal, RTT,
 congestion window), operations by type and result, ring connections and lattice
@@ -1607,6 +1612,13 @@ neighbors, hosted contracts by reason and bytes, contract-queue depth and
 rejections, gateway connect failures, and process RSS
 (`freenet.process.memory.rss`, Linux only — an empty series on macOS and Windows
 is expected, not a broken pipeline).
+
+**How long your node took to join (since v0.2.145).** Two gauges show how quickly a freshly started node found its first peer:
+
+- `freenet.bootstrap.time_to_first_ring_connection_ms`: milliseconds from process start to the node's first ring connection. It is recorded once per run. If the node later loses all its connections and rejoins, the value stays the same, because a rejoin is a reconnect and not a slow first join. There is no datapoint until the first connection exists.
+- `freenet.bootstrap.connect_attempts_before_first_connection`: the number of join (CONNECT) attempts the node made before that first connection. It is reported from startup, stops counting once the node is connected, and then keeps its final value.
+
+These gauges tell you whether a slow start came from slow first contact (high time, many attempts) or from slowly filling out the rest of the connections. That second part is what `freenet.bootstrap.completed` tracks. Gateways never get a time-to-first-connection value, because a gateway's "first connection" is just whenever someone dials it, and their attempts gauge stays at 0. The project telemetry (`telemetry-enabled`) carries the same two numbers as `bootstrap_time_to_first_ring_connection_ms` and `bootstrap_connect_attempts_before_first_connection`. Neither contains peer addresses.
 
 Every batch carries two resource attributes: `freenet.node.pubkey` (your node's
 transport public key) and `freenet.node.fingerprint` (the short form shown in
@@ -1715,6 +1727,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.13** | 2026-10-14 | 0.2.145 | A one-minute live bandwidth chart on the dashboard; app links opened while the node is still joining now wait and open, instead of being dropped on the dashboard; a node silently stuck on loopback by an old `freenet local` run fixes itself; two new join-time metrics for your own collector. |
 | **1.12** | 2026-10-12 | 0.2.144 | The Linux service now clears a leftover node on the same version too, instead of standing down beside it; the dashboard names the disk "Disk used" leaves out — the database file and its dead space, and the shared webapp cache. |
 | **1.11** | 2026-10-10 | 0.2.143 | The node downloads an update before restarting, ending an endless restart loop on slow links; the network now refuses v0.2.120 and v0.2.121, which cannot update themselves; diagnostic reports go to `telemetry.freenet.org` and work behind TLS-inspecting proxies (updates still don't); the peer page says so when it sees no difference between peers. |
 | **1.10** | 2026-10-06 | 0.2.142 | `FREENET_ROUTING_HIERARCHICAL` no longer does anything — the old router it could select is gone, and the manual's "set to 0 to fall back" was now false; the fallback-sounding variable that is *not* a replacement; peer pages redesigned around what the node learned, with the skill score moved to a new `/routing` page. |
@@ -1729,8 +1742,18 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.12 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.13 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard | UPDATED | Data Transfer card gains "Transfer rate, last minute": 60 s of upload/download at 1 s resolution, "as of N s ago" when stale, local-only | v0.2.145 |
+| §4.2 `freenet:` links | UPDATED | An app link opened while the node is connecting stays on the app's address and retries for up to 2 minutes instead of falling to the dashboard after 3 s | v0.2.145 |
+| §11.4 No peers | UPDATED | New check: a stored loopback `network-address` left by `freenet local` is now ignored and rewritten on non-gateway nodes; how to keep a deliberate loopback bind | v0.2.145 |
+| §19.4 OTel export | UPDATED | Two bootstrap gauges: time to first ring connection, and join attempts before it (gateway behaviour stated) | v0.2.145 |
+
+**Revision 1.12 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1864,19 +1887,20 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:67%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:70%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:73%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:76%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:79%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:82%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:85%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:88%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:64%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:67%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:70%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:73%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:76%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:79%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:82%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:85%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1886,7 +1910,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.12 · covers Freenet v0.2.144 ·
+<p class="footer-note">Freenet User Manual rev 1.13 · covers Freenet v0.2.145 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
