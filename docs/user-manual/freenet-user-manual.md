@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.13</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.145</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-14</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.14</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.146</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-15</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -336,7 +336,7 @@ first, so setting `home` is still worth doing.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
+## 3. First Run and the Dashboard
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -605,6 +605,8 @@ that is the contract id, which is case-sensitive.
 
 **If your node is still connecting.** Right after the node starts, it needs a moment to join the network. If you open an app link during that time, you see a *Connecting to Freenet...* page. Since **v0.2.145**, that page stays on the app's address and tries again every few seconds for up to two minutes. The app opens by itself once the node has joined, with the link exactly as it was shared, including any parameters and `#…` part. Earlier versions sent you to the dashboard after three seconds, so you lost the link and had to open it again. If the node still hasn't connected after two minutes, you are taken to the dashboard, where you can check its status. While the page waits, your address bar may briefly show an extra `_freload=…` parameter. Freenet uses it to limit how long the retries run. It is removed once the app loads, and the app never sees it. (Retrying needs JavaScript. With JavaScript turned off, you still go to the dashboard.)
 
+**Live updates right after startup.** An app you open while your node is still joining the network follows its contracts through the gateway your node first connected to. That gateway can answer your node, but it can't pass on later changes to it. Before **v0.2.146**, such an app could load normally and then show no new messages or changes for several minutes (up to about six), until the node's regular renewal happened. Since **v0.2.146**, your node remembers which subscriptions it made this way. As soon as it has a proper connection to the network, it renews them through that connection. If that doesn't work, it tries again every two minutes until it does. There is nothing to configure. If an app opened right after a restart seems frozen, wait a minute or two before you reload it.
+
 <div class="page-break"></div>
 
 # Part III — Operating Your Node
@@ -849,7 +851,7 @@ This is the same information a diagnostic report captures (§10).
 > **Make it a habit:** steps 1–3 alone (version, service status, dashboard)
 > catch the vast majority of problems and take under 30 seconds.
 
-## 8. Reading the Signals
+## 8. Reading the Signals <span class="badge badge-upd">UPDATED</span>
 
 Three numbers the node uses to talk to its supervisor are worth knowing, because
 you will see them in logs and `systemctl` output:
@@ -857,7 +859,7 @@ you will see them in logs and `systemctl` output:
 | Exit code | Meaning |
 |---|---|
 | `0` | Clean, requested shutdown. Normal. |
-| `42` | "A new release is available — update me." The supervisor runs `freenet update` and restarts. Seeing this in logs during an upgrade is **normal and healthy**. |
+| `42` | "Restart me." Usually this means a new release is available, and the supervisor runs `freenet update` and restarts. It is also used when the node's network listener stops for good. During an upgrade this is **normal and healthy**. If it repeats without an upgrade, see §11.1. |
 | `43` | "Another Freenet node is already running" (port conflict). The wrapper resolves genuine orphan conflicts itself; if you see this repeatedly, see §11.2. |
 
 ## 9. Correct what needs correcting — the principle
@@ -928,7 +930,7 @@ your config and recent logs.
 
 ## 11. Troubleshooting by Symptom
 
-### 11.1 The node won't start, or keeps stopping
+### 11.1 The node won't start, or keeps stopping <span class="badge badge-upd">UPDATED</span>
 
 1. `freenet service logs --err` — read the last few lines; the node states its
    reason for exiting.
@@ -989,7 +991,9 @@ Also remember: **unsupervised** nodes (installed with `FREENET_NO_SERVICE=1`, or
 hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 **dev/dirty builds** never auto-update by design.
 
-### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
+**Node restarting by itself on Windows (fixed since v0.2.146).** Before v0.2.146, some ordinary network events could stop a node's network listener and make it exit and restart. On Windows this included an oversized packet or a network reset caused by a remote host. The log showed `Fatal UDP recv_from error, listen task exiting`, and the exit code was usually 42, so it looked like an update. Since v0.2.146 the node drops the bad read and keeps running, and logs a warning instead: `UDP recv_from error, dropping the read and continuing`. To keep the log readable, it writes at most 5 of these warnings a minute for each class of error and reports how many it skipped. Errors caused by remote peers never stop the node. It exits only when its network socket really is unusable, or when the socket has kept failing with unrecognised errors (at least 1000 of them, with no successful read) for at least a minute. In both cases the supervisor restarts it as before. There is nothing to configure. If you still see the "Fatal" line after updating, capture a report (§10) and ask for help (§12).
+
+### 11.4 No peers / can't join the network
 
 0. **Check your version first** (v0.2.133): the transport handshake enforces a
    minimum compatible version, so a node that is too far out of date is
@@ -1070,6 +1074,14 @@ only in the node's own log:
 
 If no warning appears at all, treat it as case 1 and give the contract time to
 arrive.
+
+### 11.8 An app still shows its old version after an update <span class="badge badge-new">NEW</span>
+
+App publishers can release a new version of an app at the same address. Before v0.2.146 your browser could keep its own copy of the app's main page, so an open tab, or even a normal reload, could keep running the old version, sometimes until you cleared the browser cache.
+
+Since v0.2.146 your node tells the browser never to store an app's pages (`Cache-Control: no-store` on every HTML page under `/v1/contract/web/<key>/` and `/v2/contract/web/<key>/`). A normal reload now always fetches the current version of the page. There is nothing to configure.
+
+If an app still looks partly old after a reload, the cause is most likely its scripts, styles or images. This change does not cover those, so your browser may still use a copy it saved earlier. Apps that give each new build's files new names are not affected. If you see this, do a hard reload (Ctrl+Shift+R, or Cmd+Shift+R on macOS) or clear the site's cached data for your node's address. If the page itself is still old after a normal reload, your node may not have received the update yet. Wait a moment and reload again.
 
 ## 12. Getting Help
 
@@ -1604,7 +1616,7 @@ assertion of your node's identity to wherever it is pointed. The verification
 rules a collector must implement are in `docs/otel-metrics.md` in the source
 tree.
 
-### 19.4 What gets exported, and how your node is identified <span class="badge badge-upd">UPDATED</span>
+### 19.4 What gets exported, and how your node is identified
 
 Instruments cover transport (bytes, packets, transfers, NAT traversal, RTT,
 congestion window), operations by type and result, ring connections and lattice
@@ -1696,12 +1708,12 @@ Binary (installer default): `~/.local/bin/freenet` on Linux/macOS. The macOS
 app symlinks the CLI tools into `/usr/local/bin`. Docker keeps everything on
 the `/data` volume (binary at `/data/bin/freenet`).
 
-## Appendix C — Exit Codes
+## Appendix C — Exit Codes <span class="badge badge-upd">UPDATED</span>
 
 | Code | Meaning | Action |
 |---|---|---|
 | 0 | Clean shutdown | none |
-| 42 | Update requested | supervisor runs `freenet update`; normal during upgrades |
+| 42 | Update requested, or network listener stopped | supervisor runs `freenet update` and restarts; normal during upgrades, otherwise §11.1 |
 | 43 | Another node already running | wrapper auto-resolves orphans; else §11.2 |
 | other | Crash | supervisor restarts with backoff; probation crashes may trigger auto-rollback (§13) |
 
@@ -1727,6 +1739,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.14** | 2026-10-15 | 0.2.146 | Windows nodes no longer restart themselves on routine network errors (and exit code 42 is explained honestly); a new §11.8 for an app that keeps showing its old version, now fixed for app pages; apps opened during startup no longer go quiet for minutes. |
 | **1.13** | 2026-10-14 | 0.2.145 | A one-minute live bandwidth chart on the dashboard; app links opened while the node is still joining now wait and open, instead of being dropped on the dashboard; a node silently stuck on loopback by an old `freenet local` run fixes itself; two new join-time metrics for your own collector. |
 | **1.12** | 2026-10-12 | 0.2.144 | The Linux service now clears a leftover node on the same version too, instead of standing down beside it; the dashboard names the disk "Disk used" leaves out — the database file and its dead space, and the shared webapp cache. |
 | **1.11** | 2026-10-10 | 0.2.143 | The node downloads an update before restarting, ending an endless restart loop on slow links; the network now refuses v0.2.120 and v0.2.121, which cannot update themselves; diagnostic reports go to `telemetry.freenet.org` and work behind TLS-inspecting proxies (updates still don't); the peer page says so when it sees no difference between peers. |
@@ -1742,8 +1755,19 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.13 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.14 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §4.2 `freenet:` links | UPDATED | Subscriptions made through the bootstrap gateway are renewed through the ring once joined (retry every 2 min), so an app opened at startup no longer goes quiet for several minutes | v0.2.146 |
+| §8 Reading the signals | UPDATED | Exit code 42 also means "network listener stopped", not only "update me" | v0.2.146 |
+| §11.1 Keeps stopping | UPDATED | Routine receive errors (e.g. Windows WSAEMSGSIZE/WSAENETRESET) no longer stop the listener; the log lines, the rate limit, and when it still exits | v0.2.146 |
+| §11.8 Old app version | NEW | App HTML served with `Cache-Control: no-store`, so a normal reload gets the current version; assets are not covered — hard reload | v0.2.146 |
+| Appendix C Exit codes | UPDATED | Exit 42 row matches §8 | v0.2.146 |
+
+**Revision 1.13 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1887,20 +1911,21 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:64%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:67%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:70%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:73%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:76%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:79%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:82%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:85%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:100%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:61%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:64%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:67%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:70%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:73%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:76%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:79%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:82%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:85%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1910,7 +1935,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.13 · covers Freenet v0.2.145 ·
+<p class="footer-note">Freenet User Manual rev 1.14 · covers Freenet v0.2.146 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
