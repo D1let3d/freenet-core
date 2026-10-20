@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.14</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.146</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-15</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.15</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.147</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-19</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -405,7 +405,7 @@ The first startup fetches the current **gateway list** from
 joins the network. Within a short time the node acquires peer connections of its
 own and no longer depends on the gateway.
 
-## 4. Using Freenet Applications
+## 4. Using Freenet Applications <span class="badge badge-upd">UPDATED</span>
 
 Freenet apps are ordinary web apps loaded through your node. The flagship
 application today is **River** (<https://freenet.org/>) — decentralized group
@@ -490,6 +490,12 @@ Both orderings are now handled, so a large upload or download no longer strands
 itself on a reordered network. This is the same family as the misreporting fixes
 above: nothing you did wrong, and nothing you could have seen from the app.
 
+**Apps left open no longer go quiet after half an hour (v0.2.147).** Many apps get live updates through their delegate, the private part of the app that runs on your node. New messages in a chat are one example. Before v0.2.147, your node stopped sending those updates to an open tab 30 minutes after the app last sent a request to its delegate. An app that set itself up once and then only listened would stop showing new activity, even though the tab was still open and connected. Updates came back for another 30 minutes when you reloaded the tab, or when you did something in the app that made it contact its delegate again. Since v0.2.147, your node keeps sending updates to a tab for as long as it stays connected. It stops only when the tab is closed, its connection drops, or the delegate is removed. There is nothing to configure, and you no longer need to reload an idle app to keep it current.
+
+If you run a node that many people reach through a reverse proxy: a single delegate can send live updates to at most 128 connected app tabs at a time. A tab now keeps its place for as long as it stays connected, not just for 30 minutes. A tab that connects when all 128 places are taken still loads and still gets answers to its own requests, but it gets no live updates until another tab disconnects.
+
+**Saves no longer pause for minutes (since v0.2.147).** When an app saves something, such as a message, a post or a settings change, your node first sends a short summary to a nearby peer to see whether it already has that data. If the reply to that check got lost, older nodes waited a timeout that grew with the size of the app's data before they sent the full data. For River rooms that wait was about 1.5 to 2.5 minutes. The save did go through in the end, but the app looked frozen in the meantime. Since v0.2.147 the node stops waiting for a lost reply after a few seconds (at most about 15 with default settings) and sends the full data straight away. You don't need to do anything, and there is nothing to configure. If your node log shows the line "PUT summary-first: probe timed out; falling through to full-state driver", this fallback ran. It is normal and the save still completes. If a save still takes minutes, the cause is something else: work through §7 and §11.
+
 ### 4.1 When an app asks to run in the background
 
 Normally the private half of an app — its delegate — runs only while the app is
@@ -558,7 +564,7 @@ cannot hand one app your whole node.
 > a defense against your own machine. Protecting the machine itself remains the
 > machine's own job.
 
-### 4.2 Opening `freenet:` links <span class="badge badge-upd">UPDATED</span>
+### 4.2 Opening `freenet:` links
 
 From **v0.2.140**, a Freenet app can be shared as a link. The *Open in Freenet*
 button on <https://freenet.org/open> produces one of the form
@@ -851,7 +857,7 @@ This is the same information a diagnostic report captures (§10).
 > **Make it a habit:** steps 1–3 alone (version, service status, dashboard)
 > catch the vast majority of problems and take under 30 seconds.
 
-## 8. Reading the Signals <span class="badge badge-upd">UPDATED</span>
+## 8. Reading the Signals
 
 Three numbers the node uses to talk to its supervisor are worth knowing, because
 you will see them in logs and `systemctl` output:
@@ -930,7 +936,7 @@ your config and recent logs.
 
 ## 11. Troubleshooting by Symptom
 
-### 11.1 The node won't start, or keeps stopping <span class="badge badge-upd">UPDATED</span>
+### 11.1 The node won't start, or keeps stopping
 
 1. `freenet service logs --err` — read the last few lines; the node states its
    reason for exiting.
@@ -1075,7 +1081,7 @@ only in the node's own log:
 If no warning appears at all, treat it as case 1 and give the contract time to
 arrive.
 
-### 11.8 An app still shows its old version after an update <span class="badge badge-new">NEW</span>
+### 11.8 An app still shows its old version after an update
 
 App publishers can release a new version of an app at the same address. Before v0.2.146 your browser could keep its own copy of the app's main page, so an open tab, or even a normal reload, could keep running the old version, sometimes until you cleared the browser cache.
 
@@ -1405,7 +1411,7 @@ The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer
+## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -1425,6 +1431,8 @@ cargo install --path crates/fdev     # or: cargo install fdev
 | `fdev verify-merge` | Check that a contract's merge obeys the laws the network requires (order-independence, associativity, idempotence) — the *same* verifier the network runs. A contract that fails here cannot converge on the network. Formerly named `conformance`. *(New in v0.2.129–0.2.133.)* |
 | `fdev website init/publish/update` | Keypair-based publishing of static websites on Freenet. |
 | `fdev commands get/subscribe/update` | Raw contract operations against a node's WebSocket API. |
+
+**Associativity and capped contracts (since v0.2.147):** a contract that keeps only a limited history, such as a chat room with a message cap, a feed or a log, can give slightly different results depending on how three updates are grouped when they are merged: merging A with B first and then the result with C, or merging B with C first and then A with that result. For example, one grouping drops an old message to make room, while the other keeps it. Since v0.2.147, `fdev verify-merge` and the dashboard's "Merge laws" card no longer report this as a violation, as long as the two results reach the same state after further merges (up to 4 passes). An associativity violation is reported only when the two results do not settle on one state, or when the contract rejects one of them as invalid. If the 4 passes run out before a verdict, the case is reported as inconclusive and does not count against the contract. If an earlier version flagged a capped contract (for example a River room) as "Violation — removal-eligible" for associativity, upgrade and check again. The flag was most likely a false positive.
 
 **Breaking for delegate authors in v0.2.136:** the *synchronous* delegate
 contract-write host functions have been removed. A delegate that wrote contract
@@ -1708,7 +1716,7 @@ Binary (installer default): `~/.local/bin/freenet` on Linux/macOS. The macOS
 app symlinks the CLI tools into `/usr/local/bin`. Docker keeps everything on
 the `/data` volume (binary at `/data/bin/freenet`).
 
-## Appendix C — Exit Codes <span class="badge badge-upd">UPDATED</span>
+## Appendix C — Exit Codes
 
 | Code | Meaning | Action |
 |---|---|---|
@@ -1739,6 +1747,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.15** | 2026-10-19 | 0.2.147 | Apps left open no longer stop receiving live updates after 30 minutes; saves no longer hang for minutes when a quick check's reply is lost; `fdev verify-merge` and the dashboard stop flagging capped contracts (chat rooms, feeds) as associativity violations. |
 | **1.14** | 2026-10-15 | 0.2.146 | Windows nodes no longer restart themselves on routine network errors (and exit code 42 is explained honestly); a new §11.8 for an app that keeps showing its old version, now fixed for app pages; apps opened during startup no longer go quiet for minutes. |
 | **1.13** | 2026-10-14 | 0.2.145 | A one-minute live bandwidth chart on the dashboard; app links opened while the node is still joining now wait and open, instead of being dropped on the dashboard; a node silently stuck on loopback by an old `freenet local` run fixes itself; two new join-time metrics for your own collector. |
 | **1.12** | 2026-10-12 | 0.2.144 | The Linux service now clears a leftover node on the same version too, instead of standing down beside it; the dashboard names the disk "Disk used" leaves out — the database file and its dead space, and the shared webapp cache. |
@@ -1755,8 +1764,16 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.14 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.15 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §4 Using applications | UPDATED | App push registrations live as long as the tab's connection (no 30-minute cutoff; 128-tab cap per delegate behind a reverse proxy); a lost summary-first PUT probe now times out in ≤ ~15 s instead of ~1.5–2.5 min | v0.2.147 |
+| §18 Developer | UPDATED | `fdev verify-merge` / "Merge laws" card: associativity reported only when the two groupings do not converge within 4 heal passes; earlier flags on capped contracts likely false positives | v0.2.147 |
+
+**Revision 1.14 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1911,21 +1928,22 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:61%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:64%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:67%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:70%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:73%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:76%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:79%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:82%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:85%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:97%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:58%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:61%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:64%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:67%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:70%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:73%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:76%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:79%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:82%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:85%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:97%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1935,7 +1953,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.14 · covers Freenet v0.2.146 ·
+<p class="footer-note">Freenet User Manual rev 1.15 · covers Freenet v0.2.147 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
