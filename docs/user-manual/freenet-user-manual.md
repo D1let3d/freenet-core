@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.15</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.147</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-19</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.16</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.148</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-10-23</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -405,7 +405,7 @@ The first startup fetches the current **gateway list** from
 joins the network. Within a short time the node acquires peer connections of its
 own and no longer depends on the gateway.
 
-## 4. Using Freenet Applications <span class="badge badge-upd">UPDATED</span>
+## 4. Using Freenet Applications
 
 Freenet apps are ordinary web apps loaded through your node. The flagship
 application today is **River** (<https://freenet.org/>) — decentralized group
@@ -678,7 +678,7 @@ macOS/Windows paths.
 > copies alongside your live config is safe again — but if you have been relying
 > on a differently named file being found, rename it to `config.toml`.
 
-### 6.2 Options you're most likely to touch
+### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -709,6 +709,12 @@ Every option can be given as a CLI flag or an environment variable:
 > after upgrading it recognizes the old default and re-derives the new one. An
 > endpoint you set yourself, by flag, environment variable, or by hand in the
 > file, is left alone.
+
+**Capping your node's upload (since v0.2.148).** If you set `total-bandwidth-limit` (in bytes per second, in `config.toml` or as `--total-bandwidth-limit`), it is now a true limit on everything your node sends: app data, handshakes, acknowledgements, keepalives and resends, across all connections together. Before v0.2.148 it only set the speed for each connection, so the node as a whole could send more than you asked for, especially with many peers or a high `min-bandwidth-per-connection`. Now `min-bandwidth-per-connection` is a floor inside the total. It never takes you over the limit, and if you set it higher than the total it is lowered to match. The limit holds on average, so short bursts can go over it. The **Data Transfer** chart's upload rate should settle at or below your limit. A value of 0 is ignored, not treated as "send nothing": the log says `total-bandwidth-limit is 0; no node-wide egress cap is applied`. When the limit is on, the log says so at startup (`Node-wide egress cap active ...`). It also warns you if the limit is too low for the number of connections your node allows.
+
+If you leave `total-bandwidth-limit` unset (the default), nothing changes for you.
+
+**Transfers stall or fail after setting a limit.** A limit that is too low for the number of transfers running at once now makes those transfers slow down and can make some of them fail, where older versions would just have sent more than the limit. The log names the cause, at most once a minute. *"too many concurrent streams for the node-wide cap: raise total-bandwidth-limit"* means the total is too small. *"... raise min-bandwidth-per-connection or total-bandwidth-limit"* means a single connection's share is too small. Raise the setting it names, or remove the limit.
 
 ### 6.3 Ports and firewalls
 
@@ -979,7 +985,7 @@ your config and recent logs.
   port (default 7509) wasn't customized, and that you're browsing from the same
   machine — the API binds to localhost.
 
-### 11.3 Node seems stuck on an old version
+### 11.3 Node seems stuck on an old version <span class="badge badge-upd">UPDATED</span>
 
 Symptoms: `freenet update --check` says a newer version exists for days; or
 `freenet --version` (binary) disagrees with the running service.
@@ -998,6 +1004,8 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 **dev/dirty builds** never auto-update by design.
 
 **Node restarting by itself on Windows (fixed since v0.2.146).** Before v0.2.146, some ordinary network events could stop a node's network listener and make it exit and restart. On Windows this included an oversized packet or a network reset caused by a remote host. The log showed `Fatal UDP recv_from error, listen task exiting`, and the exit code was usually 42, so it looked like an update. Since v0.2.146 the node drops the bad read and keeps running, and logs a warning instead: `UDP recv_from error, dropping the read and continuing`. To keep the log readable, it writes at most 5 of these warnings a minute for each class of error and reports how many it skipped. Errors caused by remote peers never stop the node. It exits only when its network socket really is unusable, or when the socket has kept failing with unrecognised errors (at least 1000 of them, with no successful read) for at least a minute. In both cases the supervisor restarts it as before. There is nothing to configure. If you still see the "Fatal" line after updating, capture a report (§10) and ask for help (§12).
+
+**A bad packet from a peer no longer crashes the connection (since v0.2.148).** Before v0.2.148, two kinds of packet from another peer could make your node panic while reading from that peer. One was a packet too short to be valid. The other was a packet that came from a real connected peer but that your node could not read, for example one using a message format from a newer Freenet release. Your log showed a panic message and your node lost its connection to that peer. While newer and older versions were mixed on the network, this could keep happening. The rest of the node kept running. Since v0.2.148 there is no panic. A packet that is too short is treated like any other packet that fails decryption: it is dropped quietly, but many of these in a short time can still close the connection. An unreadable packet from a connected peer is dropped, the connection stays open, and the node writes one warning per connection: `Dropping authenticated packet that does not decode; later ones on this connection log at debug`. The warning names the peer's address and version. It is harmless and there is nothing to configure. If you see it for many different peers, your node may be out of date: see §11.3.
 
 ### 11.4 No peers / can't join the network
 
@@ -1411,7 +1419,7 @@ The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
+## 18. First Steps as a Developer
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -1747,6 +1755,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.16** | 2026-10-23 | 0.2.148 | `total-bandwidth-limit` is now a real cap on everything your node uploads, with what to do when transfers stall under a low cap; a malformed packet from a peer no longer panics the connection. |
 | **1.15** | 2026-10-19 | 0.2.147 | Apps left open no longer stop receiving live updates after 30 minutes; saves no longer hang for minutes when a quick check's reply is lost; `fdev verify-merge` and the dashboard stop flagging capped contracts (chat rooms, feeds) as associativity violations. |
 | **1.14** | 2026-10-15 | 0.2.146 | Windows nodes no longer restart themselves on routine network errors (and exit code 42 is explained honestly); a new §11.8 for an app that keeps showing its old version, now fixed for app pages; apps opened during startup no longer go quiet for minutes. |
 | **1.13** | 2026-10-14 | 0.2.145 | A one-minute live bandwidth chart on the dashboard; app links opened while the node is still joining now wait and open, instead of being dropped on the dashboard; a node silently stuck on loopback by an old `freenet local` run fixes itself; two new join-time metrics for your own collector. |
@@ -1764,8 +1773,16 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.15 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.16 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §6.2 Options | UPDATED | `total-bandwidth-limit` documented for the first time: a node-wide egress cap on all UDP traffic (opt-in, default unset); `min-bandwidth-per-connection` is a floor inside it; 0 is ignored; stall warnings and their remedies | v0.2.148 |
+| §11.3 Stuck on an old version | UPDATED | Malformed or undecodable peer packets no longer panic the receive path; the one-per-connection warning, and what it suggests when many peers trigger it | v0.2.148 |
+
+**Revision 1.15 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1928,22 +1945,23 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:58%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:61%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:64%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:67%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:70%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:73%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:76%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:79%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:82%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:85%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:91%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:93%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:95%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:97%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:56%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:59%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:62%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:65%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:68%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:71%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:74%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:77%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:80%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:82%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:84%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:86%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:92%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:95%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:97%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1953,7 +1971,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.15 · covers Freenet v0.2.147 ·
+<p class="footer-note">Freenet User Manual rev 1.16 · covers Freenet v0.2.148 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
