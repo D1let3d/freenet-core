@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.16</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.148</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-10-23</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.17</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.154</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-11-03</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -496,7 +496,7 @@ If you run a node that many people reach through a reverse proxy: a single deleg
 
 **Saves no longer pause for minutes (since v0.2.147).** When an app saves something, such as a message, a post or a settings change, your node first sends a short summary to a nearby peer to see whether it already has that data. If the reply to that check got lost, older nodes waited a timeout that grew with the size of the app's data before they sent the full data. For River rooms that wait was about 1.5 to 2.5 minutes. The save did go through in the end, but the app looked frozen in the meantime. Since v0.2.147 the node stops waiting for a lost reply after a few seconds (at most about 15 with default settings) and sends the full data straight away. You don't need to do anything, and there is nothing to configure. If your node log shows the line "PUT summary-first: probe timed out; falling through to full-state driver", this fallback ran. It is normal and the save still completes. If a save still takes minutes, the cause is something else: work through §7 and §11.
 
-### 4.1 When an app asks to run in the background
+### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -563,6 +563,19 @@ cannot hand one app your whole node.
 > the permissions page as a record of what you have allowed *apps* to do, not as
 > a defense against your own machine. Protecting the machine itself remains the
 > machine's own job.
+
+**Only your own machine can remove a delegate (since v0.2.150).** A delegate can now be unregistered only by an app or tool connected to your node from the same machine; a request from anywhere else is refused with "only a local client may unregister a delegate". Unregistering never deletes the delegate's stored secrets.
+
+**If you run a node for other people with `--hosted-mode`** (env `FREENET_HOSTED_MODE`, config `hosted-mode`, off by default), since v0.2.150:
+
+- The node refuses any client-API connection without a user token (`userToken`), answering HTTP 403 "this hosted Freenet node requires a user token (userToken) on the client API". Older clients that left the token out used to land in the node's shared space and now cannot connect.
+- Each delegate runs as the user who asked for it; a delegate it calls also runs as that user and sees only that user's secrets.
+- The node never runs a delegate on its own: no contract-change notifications, start-up runs or periodic wake-ups. A delegate can still subscribe to a contract, which keeps it up to date for the user's own reads.
+- Unregistering removes only that user's registrations. To remove the delegate itself, restart without hosted mode and unregister it locally.
+- Imports into the node-local (shared) secret scope are refused.
+- Permission prompts require a user token, and each user sees only their own.
+
+A node that does not use hosted mode behaves as before, apart from the local-only unregister rule.
 
 ### 4.2 Opening `freenet:` links
 
@@ -712,9 +725,15 @@ Every option can be given as a CLI flag or an environment variable:
 
 **Capping your node's upload (since v0.2.148).** If you set `total-bandwidth-limit` (in bytes per second, in `config.toml` or as `--total-bandwidth-limit`), it is now a true limit on everything your node sends: app data, handshakes, acknowledgements, keepalives and resends, across all connections together. Before v0.2.148 it only set the speed for each connection, so the node as a whole could send more than you asked for, especially with many peers or a high `min-bandwidth-per-connection`. Now `min-bandwidth-per-connection` is a floor inside the total. It never takes you over the limit, and if you set it higher than the total it is lowered to match. The limit holds on average, so short bursts can go over it. The **Data Transfer** chart's upload rate should settle at or below your limit. A value of 0 is ignored, not treated as "send nothing": the log says `total-bandwidth-limit is 0; no node-wide egress cap is applied`. When the limit is on, the log says so at startup (`Node-wide egress cap active ...`). It also warns you if the limit is too low for the number of connections your node allows.
 
-If you leave `total-bandwidth-limit` unset (the default), nothing changes for you.
+**Transfers on a busy connection take turns (since v0.2.149).** Under `total-bandwidth-limit`, each connection now sends its transfers' pieces in turn instead of in random order, so the transfers on a connection move forward at the same pace; before, an unlucky transfer could wait more than 5 seconds for its next piece and fail partway through. With N transfers on a connection that gets C bytes per second, each sends a 1,200-byte piece about every N × 1200 / C seconds, so about 5 × C / 1200 transfers fit at once (roughly 80 at 20 KB/s). If a transfer's next piece would have to wait past the 5-second limit, the node refuses it at once instead of letting it stall: the transfer fails with "next fragment refused: its connection's queue would reach the egress deadline", and its operation retries as it normally does. If this happens often, raise `min-bandwidth-per-connection` or `total-bandwidth-limit`. The node-wide limit is still shared between connections without a fixed order.
+
+If you leave `total-bandwidth-limit` unset (the default), none of the above applies to you.
 
 **Transfers stall or fail after setting a limit.** A limit that is too low for the number of transfers running at once now makes those transfers slow down and can make some of them fail, where older versions would just have sent more than the limit. The log names the cause, at most once a minute. *"too many concurrent streams for the node-wide cap: raise total-bandwidth-limit"* means the total is too small. *"... raise min-bandwidth-per-connection or total-bandwidth-limit"* means a single connection's share is too small. Raise the setting it names, or remove the limit.
+
+**Per-connection speed (`bandwidth-limit`, works since v0.2.152).** With no bandwidth options set, each connection to a peer is paced at about 1.25 MB/s (1,250,000 bytes per second), the rate of the default `fixedrate` congestion controller, and there is no node-wide limit, so with many peers the node can send that rate times the number of connections. *(Older help text and docs gave this default as 3 MB/s or 10 MB/s; those figures were wrong, and the behaviour has not changed.)* `bandwidth-limit` (bytes per second, in `config.toml` or as `--bandwidth-limit`) caps each connection separately. Before v0.2.152 it only set a connection's starting speed and was replaced almost at once, so it had no real effect; now it holds for the life of the connection. It can only slow a connection down, never speed it up, so 10 peers can still receive up to 10 times the figure. Short messages, acknowledgements and resends are not limited by it. When `total-bandwidth-limit` is set, `bandwidth-limit` is ignored (the log says `bandwidth-limit is ignored because total-bandwidth-limit is set`); use the total to limit what your node sends as a whole. A value of 0 is ignored, with the warning `bandwidth-limit = 0 is ignored; set total-bandwidth-limit to limit what the node sends`. A value below 65,536 (64 KiB/s) is raised to 65,536 with a warning beginning `bandwidth-limit is too low for long transfers to complete; raised to the minimum`. If you set a low `bandwidth-limit` in the past, large transfers will be slower after upgrading and very large ones, such as multi-megabyte contract states, can time out; raise or remove the value if that happens.
+
+**Experimental QUIC switches (since v0.2.149, extended in v0.2.152). Leave them unset.** `transport-quic` (`--transport-quic`, `FREENET_TRANSPORT_QUIC`) takes `off` (the default), `shadow` or `prefer`. With `shadow` or `prefer` the node opens a QUIC endpoint on its existing peer port (31337/UDP by default, so no firewall change), but in current releases all application data still goes over the normal UDP transport; if the endpoint cannot be created, the node logs a warning and runs with QUIC off. An unknown or misspelled value is treated as `off` and logs "Unknown transport-quic value; QUIC stays off". Setting `prefer` opts you in early: once you auto-update to a release that sends data over QUIC, your node will carry data over QUIC with that release's share of peer pairs, where both sides agree, without asking again (`quic-data-percent` / `FREENET_QUIC_DATA_PERCENT`, 0–100, sets this node's own offer, in place of the release's share; a pair uses QUIC only if both sides offer it, and it only matters with `prefer`). `quic-max-paths` (`--quic-max-paths`, `FREENET_QUIC_MAX_PATHS`) caps the QUIC paths held at once; it defaults to, and is lowered to, `max-number-of-connections`, `0` turns QUIC upgrades off, a non-whole number is ignored with a warning, and it is not used yet. On Linux and macOS a crash breaker guards QUIC: once the QUIC endpoint is up, the node records it in `quic-crash-breaker.json` in its data directory, and if that run ends abnormally (a crash, an out-of-memory kill, a SIGKILL — including one systemd or docker sends after its stop timeout — or closing the terminal of a foreground node), the next start keeps QUIC off for 24 hours and logs "The previous run with QUIC enabled ended abnormally, so QUIC stays off until the cooldown ends". Clean stops, auto-update restarts, reboots and the macOS tray app's own Restart/Stop/Quit/update do not trip it; an unreadable marker file keeps QUIC off for that run only. `quic-ignore-crash-breaker = true` (`--quic-ignore-crash-breaker`, `FREENET_QUIC_IGNORE_CRASH_BREAKER=1`) overrides it; a flag or environment value is saved to `config.toml` and stays until you remove it there. The breaker is off on Windows, and so is the protection that rolls back a crash-looping update, so leave QUIC `off` there.
 
 ### 6.3 Ports and firewalls
 
@@ -985,7 +1004,7 @@ your config and recent logs.
   port (default 7509) wasn't customized, and that you're browsing from the same
   machine — the API binds to localhost.
 
-### 11.3 Node seems stuck on an old version <span class="badge badge-upd">UPDATED</span>
+### 11.3 Node seems stuck on an old version
 
 Symptoms: `freenet update --check` says a newer version exists for days; or
 `freenet --version` (binary) disagrees with the running service.
@@ -1113,7 +1132,7 @@ If an app still looks partly old after a reload, the cause is most likely its sc
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works
+## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -1204,6 +1223,16 @@ node back. So the announcement that an update had **succeeded** could itself
 have caused the rollback it was reporting as no longer necessary. It now writes
 that line without being able to take the process down.
 
+**When an update cannot be downloaded, the node stays up (since v0.2.149).** Before this, a node that could not fetch a new release (GitHub slow, throttled or blocked) looped: it exited 42, the download failed, it restarted on the old version, saw the same release and exited again, every few minutes. Now a failed download puts that release on a cooldown and the node keeps serving on its current version:
+
+- The cooldown is about 1 hour after the first failure and about 2 hours after the second (each ±20%).
+- After the third failure in a row, the node exits 42 anyway so that `freenet update` can try its own download. It also exits at once if it cannot record the failure.
+- Failures more than two days old stop counting.
+
+There is also a hard limit of 320 MiB of release downloads per node in any 24 hours. If that budget runs out, the release is held, without counting as a failure, until the budget resets; the log shows "Update deferred: the download budget is spent", and `freenet update --force` overrides the hold.
+
+`freenet service report` shows the current state, for example "Update to 0.2.NNN failed 2 time(s) in a row (next attempt in 95 min). Last error: …", and the log shows "Staying on the current version and trying the update again after a cooldown". A node a few hours behind the latest release while that line keeps appearing is working as intended. If it persists, check that the node can reach github.com.
+
 ## 14. Updating Manually
 
 ### 14.1 Commands
@@ -1218,7 +1247,7 @@ $ freenet update --quiet    # no interactive output (for scripts)
 After a manual update, restart the service (`freenet service restart`) and run
 self-check steps 1–4.
 
-### 14.2 After a bad update
+### 14.2 After a bad update <span class="badge badge-upd">UPDATED</span>
 
 Normally you do nothing: automatic rollback (§13 step 5) handles a
 crash-looping release, and the node then simply skips that version. When a fixed
@@ -1247,7 +1276,9 @@ compatibility floor (§7 step 7) with nothing more than one log line to show
 for it.
 
 Since **v0.2.140** the lockout expires: a locked-out node retries **at most once
-a day**, so once whatever broke its installs is fixed, it recovers by itself. To
+a day**, so once whatever broke its installs is fixed, it recovers by itself.
+Since v0.2.149 that daily retry also waits for any download cooldown and for the
+download budget to reset (§13). To
 update immediately and reset the counter, run `freenet update` yourself. If
 updates keep failing, the most common cause is a binary path that the service
 account cannot write to — for example, a hand-installed binary the service user
@@ -1419,7 +1450,7 @@ The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer
+## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -1441,6 +1472,8 @@ cargo install --path crates/fdev     # or: cargo install fdev
 | `fdev commands get/subscribe/update` | Raw contract operations against a node's WebSocket API. |
 
 **Associativity and capped contracts (since v0.2.147):** a contract that keeps only a limited history, such as a chat room with a message cap, a feed or a log, can give slightly different results depending on how three updates are grouped when they are merged: merging A with B first and then the result with C, or merging B with C first and then A with that result. For example, one grouping drops an old message to make room, while the other keeps it. Since v0.2.147, `fdev verify-merge` and the dashboard's "Merge laws" card no longer report this as a violation, as long as the two results reach the same state after further merges (up to 4 passes). An associativity violation is reported only when the two results do not settle on one state, or when the contract rejects one of them as invalid. If the 4 passes run out before a verdict, the case is reported as inconclusive and does not count against the contract. If an earlier version flagged a capped contract (for example a River room) as "Violation — removal-eligible" for associativity, upgrade and check again. The flag was most likely a false positive.
+
+**Large state corpora (since v0.2.153):** when you give `fdev verify-merge` more states than it can pair, it samples them, 24 by default. The last state you supplied and the largest state are always sampled, and the cases from your newest states are queued first, so if the `--max-cases` budget runs out it is cases from earlier states that are dropped (before v0.2.153 the budget dropped the newest states first). Alongside the existing counts of cases skipped for size and for the budget, the report now also says how many cases sampling left out. None of these skipped cases change the verdict unless every case was skipped. To sample more, pass `--max-states-paired N` (3 to 1000); generation time grows with the square of N, and more pairs compete for the same `--max-cases` budget. Raising `--max-case-bytes` lets triples of big states fill the associativity checks, so some triples of small states that ran before may no longer run.
 
 **Breaking for delegate authors in v0.2.136:** the *synchronous* delegate
 contract-write host functions have been removed. A delegate that wrote contract
@@ -1755,6 +1788,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.17** | 2026-11-03 | 0.2.149–0.2.154 | Catch-up over six releases: a node that cannot download an update now stays up on a cooldown instead of restart-looping, with a daily download budget; `bandwidth-limit` actually works since v0.2.152, with its real default stated; the experimental QUIC switches and their risks; delegates on hosted nodes scoped to their user; `fdev verify-merge` checks newest states first. |
 | **1.16** | 2026-10-23 | 0.2.148 | `total-bandwidth-limit` is now a real cap on everything your node uploads, with what to do when transfers stall under a low cap; a malformed packet from a peer no longer panics the connection. |
 | **1.15** | 2026-10-19 | 0.2.147 | Apps left open no longer stop receiving live updates after 30 minutes; saves no longer hang for minutes when a quick check's reply is lost; `fdev verify-merge` and the dashboard stop flagging capped contracts (chat rooms, feeds) as associativity violations. |
 | **1.14** | 2026-10-15 | 0.2.146 | Windows nodes no longer restart themselves on routine network errors (and exit code 42 is explained honestly); a new §11.8 for an app that keeps showing its old version, now fixed for app pages; apps opened during startup no longer go quiet for minutes. |
@@ -1773,8 +1807,19 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.16 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.17 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §4.1 Background apps | UPDATED | Delegate unregistration, context and hosted runs are scoped to their user on hosted nodes; tokenless clients there now get 403 | v0.2.150 |
+| §6.2 Options | UPDATED | Streams served in order under `total-bandwidth-limit`; `bandwidth-limit` kept on every rate update and its real default (1,250,000 B/s) stated; one paragraph on the off-by-default QUIC switches, `quic-max-paths`, `quic-data-percent` and the 24 h crash breaker | v0.2.149, v0.2.152 |
+| §13 Auto-update | UPDATED | A failed release download puts the release on a cooldown (≈1 h, then ≈2 h); the third failure in a row exits 42 for the updater; 320 MiB per 24 h download budget; `freenet service report` status line | v0.2.149 |
+| §14.2 After a bad update | UPDATED | The lockout's daily retry also waits for the cooldown and the download budget | v0.2.149 |
+| §18 Developer | UPDATED | `fdev verify-merge` checks newest states first, reports what it skips, bounded `--max-states-paired` | v0.2.153 |
+
+**Revision 1.16 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1945,23 +1990,24 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:56%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:59%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:62%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:65%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:68%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:71%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:74%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:77%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:80%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:82%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:84%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:86%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:88%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:92%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:95%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:97%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:50%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:53%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:56%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:59%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:62%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:65%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:68%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:71%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:74%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:77%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:80%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:83%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:86%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:89%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:92%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:95%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:97%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -1971,7 +2017,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.16 · covers Freenet v0.2.148 ·
+<p class="footer-note">Freenet User Manual rev 1.17 · covers Freenet v0.2.154 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
