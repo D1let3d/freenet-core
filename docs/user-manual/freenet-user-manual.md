@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.17</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.154</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-11-03</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.18</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.155</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-11-04</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -177,7 +177,7 @@ You can customize it with environment variables before the command:
 > supervisor, a node detects the update, exits… and stays stopped on the old
 > version. Install the service unless you know you want manual control.
 
-### 2.3 Desktop apps: macOS and Windows
+### 2.3 Desktop apps: macOS and Windows <span class="badge badge-upd">UPDATED</span>
 
 **macOS** now has a first-class app: download the DMG from
 <https://freenet.org/>, drag Freenet to Applications, and launch it. The app
@@ -188,6 +188,8 @@ launch, automatically puts the `freenet` and `fdev` command-line tools on your
 manual work without any shell configuration. *(App since v0.2.125; automatic
 CLI setup since v0.2.133.)* The §2.2 installer script also still works on
 macOS if you prefer a service without the app.
+
+**Menu bar icon on macOS 26 (since v0.2.155).** On macOS 26, earlier versions of the app could start the node without showing the Freenet icon in the menu bar. The node ran, but you had no menu to stop or restart it. Since v0.2.155 the app's main executable is the Freenet binary itself instead of a launcher script, so the icon appears. If you turned on Launch at Login with an older version, the first start of v0.2.155 or later updates that login entry for you, and you do not need to do anything. If the update cannot be written, the old entry is kept and keeps working. If the icon is still missing after updating, quit Freenet (for example from Activity Monitor) and open Freenet.app from Applications again.
 
 **Windows:** download the Windows installer from <https://freenet.org/>. The
 node runs under a **tray application**: a Freenet icon in the system tray with
@@ -566,6 +568,8 @@ cannot hand one app your whole node.
 
 **Only your own machine can remove a delegate (since v0.2.150).** A delegate can now be unregistered only by an app or tool connected to your node from the same machine; a request from anywhere else is refused with "only a local client may unregister a delegate". Unregistering never deletes the delegate's stored secrets.
 
+**Apps can no longer pretend to be your node when talking to a delegate (since v0.2.155).** An app, or any program connected to your node, may send a delegate only its own app messages. Messages that only your node should send are now refused before the delegate runs. These include contract update notifications, contract read or write results, your answers to the delegate's prompts, messages from other delegates, and start-up or wake-up signals. Message kinds the node does not recognise are refused too. Before v0.2.155 only start-up and wake-up signals were refused. An app could hand a delegate made-up contract state, a made-up answer from you or a made-up message from another delegate, and the delegate could not tell it from the real thing. A refused request returns "a client may send a delegate only ApplicationMessage; <kind> is delivered by the node", where <kind> names the refused message, and the node logs a warning: "Refused a client delegate request carrying an inbound message only the node delivers". There is nothing to configure. If an app starts showing this error after you upgrade, the app is relying on behaviour that is no longer allowed. Report it to the app's author.
+
 **If you run a node for other people with `--hosted-mode`** (env `FREENET_HOSTED_MODE`, config `hosted-mode`, off by default), since v0.2.150:
 
 - The node refuses any client-API connection without a user token (`userToken`), answering HTTP 403 "this hosted Freenet node requires a user token (userToken) on the client API". Older clients that left the token out used to land in the node's shared space and now cannot connect.
@@ -733,7 +737,11 @@ If you leave `total-bandwidth-limit` unset (the default), none of the above appl
 
 **Per-connection speed (`bandwidth-limit`, works since v0.2.152).** With no bandwidth options set, each connection to a peer is paced at about 1.25 MB/s (1,250,000 bytes per second), the rate of the default `fixedrate` congestion controller, and there is no node-wide limit, so with many peers the node can send that rate times the number of connections. *(Older help text and docs gave this default as 3 MB/s or 10 MB/s; those figures were wrong, and the behaviour has not changed.)* `bandwidth-limit` (bytes per second, in `config.toml` or as `--bandwidth-limit`) caps each connection separately. Before v0.2.152 it only set a connection's starting speed and was replaced almost at once, so it had no real effect; now it holds for the life of the connection. It can only slow a connection down, never speed it up, so 10 peers can still receive up to 10 times the figure. Short messages, acknowledgements and resends are not limited by it. When `total-bandwidth-limit` is set, `bandwidth-limit` is ignored (the log says `bandwidth-limit is ignored because total-bandwidth-limit is set`); use the total to limit what your node sends as a whole. A value of 0 is ignored, with the warning `bandwidth-limit = 0 is ignored; set total-bandwidth-limit to limit what the node sends`. A value below 65,536 (64 KiB/s) is raised to 65,536 with a warning beginning `bandwidth-limit is too low for long transfers to complete; raised to the minimum`. If you set a low `bandwidth-limit` in the past, large transfers will be slower after upgrading and very large ones, such as multi-megabyte contract states, can time out; raise or remove the value if that happens.
 
-**Experimental QUIC switches (since v0.2.149, extended in v0.2.152). Leave them unset.** `transport-quic` (`--transport-quic`, `FREENET_TRANSPORT_QUIC`) takes `off` (the default), `shadow` or `prefer`. With `shadow` or `prefer` the node opens a QUIC endpoint on its existing peer port (31337/UDP by default, so no firewall change), but in current releases all application data still goes over the normal UDP transport; if the endpoint cannot be created, the node logs a warning and runs with QUIC off. An unknown or misspelled value is treated as `off` and logs "Unknown transport-quic value; QUIC stays off". Setting `prefer` opts you in early: once you auto-update to a release that sends data over QUIC, your node will carry data over QUIC with that release's share of peer pairs, where both sides agree, without asking again (`quic-data-percent` / `FREENET_QUIC_DATA_PERCENT`, 0–100, sets this node's own offer, in place of the release's share; a pair uses QUIC only if both sides offer it, and it only matters with `prefer`). `quic-max-paths` (`--quic-max-paths`, `FREENET_QUIC_MAX_PATHS`) caps the QUIC paths held at once; it defaults to, and is lowered to, `max-number-of-connections`, `0` turns QUIC upgrades off, a non-whole number is ignored with a warning, and it is not used yet. On Linux and macOS a crash breaker guards QUIC: once the QUIC endpoint is up, the node records it in `quic-crash-breaker.json` in its data directory, and if that run ends abnormally (a crash, an out-of-memory kill, a SIGKILL — including one systemd or docker sends after its stop timeout — or closing the terminal of a foreground node), the next start keeps QUIC off for 24 hours and logs "The previous run with QUIC enabled ended abnormally, so QUIC stays off until the cooldown ends". Clean stops, auto-update restarts, reboots and the macOS tray app's own Restart/Stop/Quit/update do not trip it; an unreadable marker file keeps QUIC off for that run only. `quic-ignore-crash-breaker = true` (`--quic-ignore-crash-breaker`, `FREENET_QUIC_IGNORE_CRASH_BREAKER=1`) overrides it; a flag or environment value is saved to `config.toml` and stays until you remove it there. The breaker is off on Windows, and so is the protection that rolls back a crash-looping update, so leave QUIC `off` there.
+**Experimental QUIC switches (since v0.2.149, extended in v0.2.152 and v0.2.155). Unset now means `shadow` on Linux and macOS.** `transport-quic` (`--transport-quic`, `FREENET_TRANSPORT_QUIC`) takes `off`, `shadow` or `prefer`. Since v0.2.155, leaving it unset means `shadow` on Linux and macOS and `off` on Windows and other platforms. With `shadow` or `prefer` the node opens a QUIC endpoint on its existing peer port (31337/UDP by default, so no firewall change) and upgrades connections to peers that also run QUIC to a QUIC path. That path carries control messages only; in current releases all application data still goes over the normal UDP transport. If the endpoint cannot be created, the node logs a warning and runs with QUIC off. The unset default is worked out each time the config is read and is never written to `config.toml`, so a node that never set the key follows the release it runs: a later release can turn QUIC off again without you doing anything. A value you pass once with `--transport-quic` or `FREENET_TRANSPORT_QUIC` is saved to `config.toml` and stays until you remove it there. To opt out, set `transport-quic = "off"`. An unknown or misspelled value is treated as `off` and logs "Unknown transport-quic value; QUIC stays off". Setting `prefer` opts you in early: once you auto-update to a release that sends data over QUIC, your node will carry data over QUIC with that release's share of peer pairs, where both sides agree, without asking again (`quic-data-percent` / `FREENET_QUIC_DATA_PERCENT`, 0–100, sets this node's own offer, in place of the release's share; a pair uses QUIC only if both sides offer it, and it only matters with `prefer`). `quic-max-paths` (`--quic-max-paths`, `FREENET_QUIC_MAX_PATHS`) caps the QUIC paths held at once; it defaults to, and is lowered to, `max-number-of-connections`, `0` turns QUIC upgrades off, a non-whole number is ignored with a warning, and it is not used yet. On Linux and macOS a crash breaker guards QUIC, and because `shadow` is now the default there, it is armed on a stock node: once the QUIC endpoint is up, the node records it in `quic-crash-breaker.json` in its data directory, and if that run ends abnormally (a crash, an out-of-memory kill, a SIGKILL — including one systemd, launchd, Kubernetes or `docker stop` sends after its stop timeout — or closing the terminal of a foreground node), the next start keeps QUIC off for 24 hours and logs "The previous run with QUIC enabled ended abnormally, so QUIC stays off until the cooldown ends. Set `quic-ignore-crash-breaker = true` to run QUIC anyway". In this release a trip costs nothing, because no application data rides on QUIC yet. Clean stops, auto-update restarts, reboots and the macOS tray app's own Restart/Stop/Quit/update do not trip it; an unreadable marker file keeps QUIC off for that run only.
+
+On Windows, since v0.2.155, the breaker works a different way: it counts short runs, using the same marker file. A run with QUIC enabled that ends in less than 10 minutes counts as short, whatever ended it (a fatal listener or storage error counts too). After three short runs in a row, the next start keeps QUIC off for 24 hours and logs "Several runs in a row with QUIC enabled ended early, so QUIC stays off until the cooldown ends". Later starts within those 24 hours log "QUIC stays off: several runs in a row with QUIC enabled ended early and the cooldown has not ended". The count clears once a run passes 10 minutes ("The run has passed the QUIC short-run limit; the count is clear"), on Ctrl+C or an auto-update restart, and when a run starts more than 24 hours after the one before it. Three runs in a row that each end within 10 minutes for ordinary reasons also count and can trip it, for example stopping or restarting from the tray, `freenet service restart`, or shutting down or logging off soon after each logon. `quic-ignore-crash-breaker = true` (`--quic-ignore-crash-breaker`, `FREENET_QUIC_IGNORE_CRASH_BREAKER=1`) overrides the breaker on every platform; a flag or environment value is saved to `config.toml` and stays until you remove it there. On Windows, starting with the override set erases the trip, so removing the override later does not bring the 24 hours back. The protection that rolls back a crash-looping update is not there on Windows, so keep QUIC `off` there unless you are testing it.
+
+**`allowed-host` on a loopback bind (since v0.2.155).** When the node's API listens only on localhost (the default), it no longer adds the addresses the machine's hostname resolves to (such as its LAN address) to the accepted `Host` names. This skips a blocking hostname lookup at startup, which kept the API from listening for about 35 seconds on one macOS 26 machine. If you reach a loopback-bound node through a forwarder that keeps the original `Host` header (for example `192.168.1.20:7509`), add that address with `--allowed-host 192.168.1.20` (it can be given more than once). Otherwise the node rejects those requests.
 
 ### 6.3 Ports and firewalls
 
@@ -1132,7 +1140,7 @@ If an app still looks partly old after a reload, the cause is most likely its sc
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
+## 13. How Auto-Update Works
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -1247,7 +1255,7 @@ $ freenet update --quiet    # no interactive output (for scripts)
 After a manual update, restart the service (`freenet service restart`) and run
 self-check steps 1–4.
 
-### 14.2 After a bad update <span class="badge badge-upd">UPDATED</span>
+### 14.2 After a bad update
 
 Normally you do nothing: automatic rollback (§13 step 5) handles a
 crash-looping release, and the node then simply skips that version. When a fixed
@@ -1450,7 +1458,7 @@ The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
 a more valuable network citizen; it never grows unbounded either way.
 
-## 18. First Steps as a Developer <span class="badge badge-upd">UPDATED</span>
+## 18. First Steps as a Developer
 
 Everything on Freenet — every app, every chat room — is contracts plus
 delegates plus a web front-end, and the tooling is a single CLI:
@@ -1788,6 +1796,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.18** | 2026-11-04 | 0.2.155 | QUIC shadow mode is now on by default on Linux and macOS (rev 1.17's "off by default" was true only up to v0.2.154), with a new Windows short-run breaker; apps can no longer impersonate the node to a delegate; the macOS 26 menu bar icon shows again; loopback API no longer resolves the hostname at startup. |
 | **1.17** | 2026-11-03 | 0.2.149–0.2.154 | Catch-up over six releases: a node that cannot download an update now stays up on a cooldown instead of restart-looping, with a daily download budget; `bandwidth-limit` actually works since v0.2.152, with its real default stated; the experimental QUIC switches and their risks; delegates on hosted nodes scoped to their user; `fdev verify-merge` checks newest states first. |
 | **1.16** | 2026-10-23 | 0.2.148 | `total-bandwidth-limit` is now a real cap on everything your node uploads, with what to do when transfers stall under a low cap; a malformed packet from a peer no longer panics the connection. |
 | **1.15** | 2026-10-19 | 0.2.147 | Apps left open no longer stop receiving live updates after 30 minutes; saves no longer hang for minutes when a quick check's reply is lost; `fdev verify-merge` and the dashboard stop flagging capped contracts (chat rooms, feeds) as associativity violations. |
@@ -1807,8 +1816,17 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.17 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.18 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §2.3 Desktop apps | UPDATED | macOS 26: the menu bar icon shows again; an old Launch at Login entry is repaired by itself | v0.2.155 |
+| §4.1 Background apps | UPDATED | Clients may send delegates only application messages; node-only kinds are refused with an error | v0.2.155 |
+| §6.2 Options | UPDATED | Unset `transport-quic` now means `shadow` on Linux and macOS (`off` elsewhere), so the crash breaker is armed by default there; Windows short-run breaker; `allowed-host` on a loopback bind no longer adds the hostname's addresses | v0.2.155 |
+
+**Revision 1.17 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -1990,24 +2008,25 @@ inline; kept so each edition's changes stay on the record):
 **Coverage growth chart** (sections present per revision):
 
 <div class="growth-chart">
-<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:50%">18 sections + 5 appendices</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:53%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:56%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:59%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:62%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:65%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:68%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:71%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:74%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:77%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:80%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:83%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:86%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:89%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:92%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:95%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:97%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:46%">18 sections + 5 appendices</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:49%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:52%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:55%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:58%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:61%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:64%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:67%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:70%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:73%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:76%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:79%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:82%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:85%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:88%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:91%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:94%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:97%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:100%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -2017,7 +2036,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.17 · covers Freenet v0.2.154 ·
+<p class="footer-note">Freenet User Manual rev 1.18 · covers Freenet v0.2.155 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
