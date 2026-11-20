@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.22</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.160</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-11-18</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.23</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.161</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-11-20</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -499,7 +499,7 @@ If you run a node that many people reach through a reverse proxy: a single deleg
 
 **Saves no longer pause for minutes (since v0.2.147).** When an app saves something, such as a message, a post or a settings change, your node first sends a short summary to a nearby peer to see whether it already has that data. If the reply to that check got lost, older nodes waited a timeout that grew with the size of the app's data before they sent the full data. For River rooms that wait was about 1.5 to 2.5 minutes. The save did go through in the end, but the app looked frozen in the meantime. Since v0.2.147 the node stops waiting for a lost reply after a few seconds (at most about 15 with default settings) and sends the full data straight away. You don't need to do anything, and there is nothing to configure. If your node log shows the line "PUT summary-first: probe timed out; falling through to full-state driver", this fallback ran. It is normal and the save still completes. If a save still takes minutes, the cause is something else: work through §7 and §11.
 
-### 4.1 When an app asks to run in the background
+### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -580,6 +580,10 @@ These requests are accepted only from the same machine. Changing `--ws-api-addre
 **Limits on what contracts and delegates hand back (since v0.2.157).** Error and log messages from a contract or delegate are cut to 1 KiB before your node logs them or passes them to an app, ending with a note such as "... [truncated, N bytes total]". One delegate run may produce at most 4096 messages and 128 MiB of output, and one request to a delegate at most 256 MiB in total; a result over these is rejected as a delegate error. Your node also checks every memory location a contract returns against that contract's own memory: a bad one fails only that operation, with an error including `WASM module returned an invalid memory reference: ...`, where before a buggy or malicious contract could read or write outside its sandbox or panic and crash the node. If you keep seeing that error for one contract, the contract is broken; tell its app's author. Delegate results are not checked this way yet (#6217). Nothing to configure.
 
 **Faster delegate replies on a busy node (since v0.2.157).** A request to a delegate that is not already busy now starts at once, instead of queueing behind all the node's contract work (where a 1 ms request could wait seconds). Requests to a busy delegate, registrations and removals still go through the main queue. The new queue holds 128 requests, the last 16 kept for apps on your own machine (hosted-mode users count as remote). When it is full a request is refused at once with an error, and the node logs "Refused a delegate request: the delegate lane is full" (or "Refused a non-local delegate request: the delegate lane's intake is full apart from its local reserve") on the first refusal and each time the total doubles. Seeing these often means something is sending far more delegate requests than usual.
+
+**A flood of relayed requests can no longer crowd out your own apps (since v0.2.161).** Your node's contract work now arrives in separate queues by priority. Requests from apps on your own machine get a queue of 2,048. Requests your node relays for other peers get 1,024. Background upkeep, such as renewals, interest sync and placement caching, gets 256. Disconnects and contract evictions are never refused. When a queue is full, a new request is refused at once instead of waiting behind everything else. Your node also limits how many relayed GET, PUT and UPDATE requests it handles at once: at most 256 from any one address (an IPv4 address or an IPv6 /64) and 4,096 in total. Your own apps' requests do not count toward these limits. A relayed request over a limit is answered straight away. A GET is answered "not found", so the requester asks its next peer. A PUT is answered "PUT relay: peer overloaded, try another", and the node that started the PUT retries through a different first peer instead of failing. A refused UPDATE is repaired later, the same way as a rate-limited one. The node logs "Refused a contract-handler event: its admission lane is full" on the first refusal and each time the total doubles. For relayed or background work this is logged at INFO and is normal under heavy load. For your own apps it is a WARN, and the app gets an error at once. If you see that warning often, an app on your machine is sending more than 2,048 requests at a time. There is nothing to configure.
+
+**Contracts and delegates cannot reach each other's records (since v0.2.161).** When a contract or delegate calls into your node, the node now works out which one is calling from the call itself. It no longer trusts an id the contract or delegate passes in. Before this, a buggy or malicious contract could pass another running instance's id and read or change that instance's memory or input/output records. Contracts and delegates that behave correctly see no difference. Nothing to configure.
 
 **If you run a node for other people with `--hosted-mode`** (env `FREENET_HOSTED_MODE`, config `hosted-mode`, off by default), since v0.2.150:
 
@@ -708,7 +712,7 @@ macOS/Windows paths.
 > copies alongside your live config is safe again — but if you have been relying
 > on a differently named file being found, rename it to `config.toml`.
 
-### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
+### 6.2 Options you're most likely to touch
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -1124,7 +1128,7 @@ lists two things your node measures but does **not** count:
 Either reads "not measured" until the node has first looked at it. Neither is
 charged against the disk budget yet, so a budget alone does not bound them.
 
-### 11.7 An app loads, but parts of it are missing
+### 11.7 An app loads, but parts of it are missing <span class="badge badge-upd">UPDATED</span>
 
 Since v0.2.137 an app asset your node cannot serve comes back as a plain **404**
 instead of a 500 carrying an operating-system error message in the page. That is
@@ -1157,6 +1161,8 @@ only in the node's own log:
 If no warning appears at all, treat it as case 1 and give the contract time to
 arrive.
 
+**Apps refused for size (since v0.2.161).** Your node puts size limits on the web apps it unpacks. It refuses an app whose archive is over 100 MiB compressed, unpacks to more than 48 MiB, contains a single file over 32 MiB, or holds more than 4096 entries. It also refuses symbolic links, hard links, devices and other special entries; only ordinary files and folders are allowed. When an app is refused, the node removes anything it had already unpacked. Separately, a JavaScript or HTML page larger than 16 MiB is not served: that request gets an error instead. These limits protect your disk and memory from a malicious app built to expand enormously. They cannot be changed, and ordinary apps such as River are far below them. If an app never loads and the node log shows "web archive unpacks to more than", "web archive has more than 4096 entries", "refusing to unpack" or "over the … byte limit" (for a single oversized file, or a page over 16 MiB that is not served), the app is too large or malformed. The log gives the limits in bytes, not MiB. Waiting or reloading will not fix it; the app's publisher has to.
+
 ### 11.8 An app still shows its old version after an update
 
 App publishers can release a new version of an app at the same address. Before v0.2.146 your browser could keep its own copy of the app's main page, so an open tab, or even a normal reload, could keep running the old version, sometimes until you cleared the browser cache.
@@ -1183,7 +1189,7 @@ A single minute with targets but no sends is not a fault: the node can hold a se
 
 **Large contract updates use bounded memory (since v0.2.160).** Before v0.2.160, when your node passed on an update to a contract whose state is several megabytes, it prepared the copies for subscribers and peers side by side. Up to about a dozen copies could be in memory at once, so a node hosting a big, busy contract could see sudden memory jumps or be killed for running out of memory. Since v0.2.160, every update to a state of 4 MiB or more waits in the node's large-transfer queue, and the node sends at most 2 such copies at a time across all contracts. Contracts under 4 MiB are not affected. A contract this large with many subscribers may take a little longer to reach all of them. There is nothing to configure.
 
-**Large transfers failing after a few days of uptime (fixed in v0.2.160).** Before v0.2.160, a node running for several days could stop delivering its large messages to peers over the UDP transport: large contract states, uploads, and anything sent in chunks. Pairs whose data went over QUIC were not affected. The messages were dropped with no error on either side, so gets, puts and updates of large contracts failed or timed out while small ones worked. A restart cleared it for a few more days. Since v0.2.160 the receiving peer no longer mistakes these transfers for another kind of stream. There is nothing to configure, and older peers read the transfers the same way. If large transfers still fail on a long-running v0.2.160 node, capture a report (§10) and ask for help (§12).
+**Large transfers failing after a few days of uptime (fixed in v0.2.160 and v0.2.161).** Before v0.2.160, a node running for several days could stop delivering its large messages to peers over the UDP transport: large contract states, uploads, and anything sent in chunks. Pairs whose data went over QUIC were not affected. The messages were dropped with no error on either side, so gets, puts and updates of large contracts failed or timed out while small ones worked. A restart cleared it for a few more days. Since v0.2.160 the receiving peer no longer mistakes these transfers for another kind of stream. **A second cause is fixed in v0.2.161.** Every large transfer carries a number that identifies it on its connection. Before v0.2.161, each worker thread inside the node took these numbers from its own range, and the node keeps creating new threads. After long uptime, an old thread's range could run into a newer thread's range, so two transfers on the same connection could get the same number. The receiving peer then dropped the second transfer as already finished, again with no error on either side. Since v0.2.161 the whole node takes these numbers from one shared counter, so a number is not reused until about two billion transfers have been sent. There is nothing to configure, and older peers read the transfers the same way. If large transfers still fail on a long-running node, first make sure it runs v0.2.161 or later, then capture a report (§10) and ask for help (§12).
 
 ## 12. Getting Help
 
@@ -1441,7 +1447,7 @@ contract state, caches, the binary — is replaceable; the secrets are not.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning
+## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
@@ -1520,6 +1526,14 @@ about **17 GiB**. On a larger disk the 32 GiB cap binds unless you raise
 with distinct code, since WASM grows with those. Raising this dial does not make
 your node take on more contracts than its memory can hold — that ceiling is
 `--hosting-mem-share`, above.
+
+**Since v0.2.161, `--max-hosting-storage` holds as a disk bound.** In earlier releases, three things could push the disk your node used for contract state past the budget:
+
+- A contract that grew through UPDATEs was still counted at the size it had when first stored, so its growth never triggered eviction. The node now charges each contract its current stored size after every write.
+- Under heavy relay traffic from other peers, the work that frees disk after an eviction could be postponed indefinitely. It now runs at the same priority as relayed traffic, so the writes that fill the disk cannot outrun it.
+- Peers could keep writing UPDATEs into the copy of a contract your node had already evicted. Those bytes stayed on disk without counting against any budget. Now an UPDATE for a contract your node no longer hosts is passed on toward the nodes that do host it, not stored, and a broadcast for such a contract is dropped. Your node also no longer serves an evicted copy as a fallback answer to a GET.
+
+If your node was over its budget before you upgraded, expect it to evict contracts and free disk soon after it starts on v0.2.161. This needs no action, and there are no new flags or changed defaults.
 
 The defaults are deliberately conservative: a stock node donates a bounded,
 predictable amount of your disk and memory. Raising the budgets makes your node
@@ -1832,7 +1846,7 @@ Binary (installer default): `~/.local/bin/freenet` on Linux/macOS. The macOS
 app symlinks the CLI tools into `/usr/local/bin`. Docker keeps everything on
 the `/data` volume (binary at `/data/bin/freenet`).
 
-## Appendix C — Exit Codes <span class="badge badge-upd">UPDATED</span>
+## Appendix C — Exit Codes
 
 | Code | Meaning | Action |
 |---|---|---|
@@ -1863,6 +1877,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.23** | 2026-11-20 | 0.2.161 | Relayed requests can no longer crowd out your own apps (priority queues, per-address and node-wide relay caps, overloaded relays redirect); oversized or booby-trapped app archives are refused; a second cause of large transfers failing after days of uptime is fixed; contracts and delegates can no longer reach each other's host records; `--max-hosting-storage` is now enforced for state growth and eviction. |
 | **1.22** | 2026-11-18 | 0.2.160 | Unset `transport-quic` now means `prefer` on every platform; the QUIC crash breaker decides by role (peers: two QUIC-panic short runs, 24 h; gateways: 15 min doubling to 4 h, and supervised gateways restart themselves with exit 42 to get QUIC back); the startup telemetry report adds build commit and auto-update state; large transfers no longer fail after days of uptime, and large-state broadcasts use bounded memory. |
 | **1.21** | 2026-11-16 | 0.2.158–0.2.159 | The QUIC data ramp started in v0.2.158 (2026-11-16 02:30 UTC; rev 1.20's "no data on QUIC" held only up to v0.2.157), so stock nodes now move their data onto QUIC over 24 hours, bringing the QUIC-memory connection limit and the crash breaker's data cost with it; v0.2.159 keeps the ramp (an emergency stop was reverted before release); quiet QUIC paths are kept up to 120 s; a per-contract merge budget replaces the merge freeze. |
 | **1.20** | 2026-11-14 | 0.2.157 | Unset `transport-quic` now means `prefer` on Linux, macOS and Windows (rev 1.18–1.19 said `shadow`, and `off` on Windows), still with no data on QUIC; the one-day data ramp a later release can switch on, how to opt out, and `off` deprecated; a new §11.9 for changes that don't reach other people; crash-looping nodes can update themselves on Windows and macOS; stricter local API checks; limits on what contracts and delegates hand back. |
@@ -1887,8 +1902,18 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.22 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.23 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §4.1 Background permission (contract and delegate notes) | UPDATED | Priority admission queues (local 2,048 / relay 1,024 / background 256), relay caps 256 per address and 4,096 node-wide, overloaded-relay redirects; host functions bound to the calling instance | v0.2.161 |
+| §11.7 App parts missing | UPDATED | App archives refused over 100 MiB compressed, 48 MiB unpacked, 32 MiB per file or 4,096 entries; pages over 16 MiB not served | v0.2.161 |
+| §11.9 Changes don't reach others | UPDATED | Second cause of large transfers failing after days of uptime fixed (one process-wide stream-id counter) | v0.2.161 |
+| §17 Storage tuning | UPDATED | `--max-hosting-storage` now holds: update growth counted, eviction reclaims disk under load | v0.2.161 |
+
+**Revision 1.22 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -2119,27 +2144,28 @@ inline; kept so each edition's changes stay on the record):
 <div class="growth-chart">
 <div class="growth-row"><span class="growth-label">rev 1.0</span><span class="growth-bar" style="width:37%">18 sections + 5 appendices</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:40%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:43%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:46%">19 sections + 5 appendices · 8 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:42%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:45%">19 sections + 5 appendices · 8 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:48%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:51%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:54%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:57%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:60%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:63%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:66%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:68%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:71%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:74%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:77%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:80%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:83%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:86%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:89%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:91%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:94%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:97%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:53%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:56%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:59%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:62%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:64%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:67%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:70%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:73%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:75%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:78%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:81%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:84%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:86%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:89%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:92%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:97%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -2149,7 +2175,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.22 · covers Freenet v0.2.160 ·
+<p class="footer-note">Freenet User Manual rev 1.23 · covers Freenet v0.2.161 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
