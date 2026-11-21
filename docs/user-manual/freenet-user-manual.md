@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.23</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.161</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-11-20</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.24</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.162</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-11-21</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -338,7 +338,7 @@ first, so setting `home` is still worth doing.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard
+## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -384,6 +384,8 @@ permissions are and when you will be asked for one. (That page had no way back
 to the dashboard when it shipped; v0.2.139 adds the link.)
 
 **A live bandwidth chart (since v0.2.145).** The **Data Transfer** card now has a section called *"Transfer rate, last minute"*. It charts your node's upload and download rates over the last 60 seconds, measured once a second, and shows the latest figures above the chart (*"Latest: Upload … Download …"*). This lets you see what your node is doing right now, where before you only had lifetime totals. Use it to check whether a slow app or a busy connection is Freenet's doing. On a desktop-width screen, hover over the chart to read any single second. Just after the node starts, the section reads *"Measuring transfer rates…"* until it has two readings. If the newest reading is more than 3 seconds old, the figures carry *"as of N s ago"* so you don't mistake a stalled reading for the current rate. The chart counts Freenet traffic only, as encrypted UDP datagrams without UDP or IP headers, so it will read a little lower than your router or OS counters. The rates use decimal units (1 KB/s = 1,000 bytes per second), while the card's lifetime totals above them use binary units. The measurement stays on your machine: it sends nothing to the project's telemetry, and there is nothing to configure.
+
+**Download totals now include QUIC (since v0.2.162).** Before v0.2.162, data your node received over QUIC was not added to the **Data Transfer** card's lifetime Download total or to each peer's received bytes. Data it sent over QUIC was counted in Upload. A default node has sent data over QUIC since v0.2.158 (§6.2), so Download could read well under half of Upload when real traffic was much more even. Now QUIC data is counted on both sides. Expect the Download total to grow faster after you upgrade. Received QUIC traffic is counted as the data it carries, not the whole packet, so it reads a few percent low (about 4% on a large transfer). There is nothing to configure.
 
 **Red no longer means "normal" (v0.2.141).** Until this release the dashboard
 painted some perfectly ordinary states in warning colours: the operations
@@ -499,7 +501,7 @@ If you run a node that many people reach through a reverse proxy: a single deleg
 
 **Saves no longer pause for minutes (since v0.2.147).** When an app saves something, such as a message, a post or a settings change, your node first sends a short summary to a nearby peer to see whether it already has that data. If the reply to that check got lost, older nodes waited a timeout that grew with the size of the app's data before they sent the full data. For River rooms that wait was about 1.5 to 2.5 minutes. The save did go through in the end, but the app looked frozen in the meantime. Since v0.2.147 the node stops waiting for a lost reply after a few seconds (at most about 15 with default settings) and sends the full data straight away. You don't need to do anything, and there is nothing to configure. If your node log shows the line "PUT summary-first: probe timed out; falling through to full-state driver", this fallback ran. It is normal and the save still completes. If a save still takes minutes, the cause is something else: work through §7 and §11.
 
-### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
+### 4.1 When an app asks to run in the background
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -1077,7 +1079,7 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 
 **A bad packet from a peer no longer crashes the connection (since v0.2.148).** Before v0.2.148, two kinds of packet from another peer could make your node panic while reading from that peer. One was a packet too short to be valid. The other was a packet that came from a real connected peer but that your node could not read, for example one using a message format from a newer Freenet release. Your log showed a panic message and your node lost its connection to that peer. While newer and older versions were mixed on the network, this could keep happening. The rest of the node kept running. Since v0.2.148 there is no panic. A packet that is too short is treated like any other packet that fails decryption: it is dropped quietly, but many of these in a short time can still close the connection. An unreadable packet from a connected peer is dropped, the connection stays open, and the node writes one warning per connection: `Dropping authenticated packet that does not decode; later ones on this connection log at debug`. The warning names the peer's address and version. It is harmless and there is nothing to configure. If you see it for many different peers, your node may be out of date: see §11.3.
 
-### 11.4 No peers / can't join the network
+### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
 
 0. **Check your version first** (v0.2.133): the transport handshake enforces a
    minimum compatible version, so a node that is too far out of date is
@@ -1094,7 +1096,8 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 
    Also since v0.2.156, one bad gateway no longer stops the node. It skips a malformed index entry, a gateway whose public key is missing, unreadable or invalid, and a gateway whose hostname does not resolve, logs a warning for each (for example `Skipping malformed gateway entry in the remote index`, `Skipping gateway whose public key is not valid hex` or `Skipping gateway whose address cannot be resolved`), and carries on with the rest. A skipped gateway is not retried until the next restart. If a gateway's key can't be downloaded this time but a valid copy was saved earlier, the node uses that copy (`Using the previously cached key for this gateway`), and as long as at least one gateway from the index worked it also keeps that gateway's cached entry in `gateways.toml`. A few of these warnings are harmless. A regular (non-gateway) node fails to start only when no usable gateway is left: with `no configured gateway address could be resolved` if every gateway failed DNS, or otherwise `no configured gateway could be used (N skipped): ...` followed by up to five reasons. If you see either, check your DNS and network and any gateway key files you edited by hand, then ask in Matrix (§12).
 4. **Did you ever run `freenet local` on this machine?** (fixed since v0.2.145) Local mode and network mode use the same `config.toml`. Older `freenet local` runs saved a loopback address there as `network-address` (`::1`, or `127.0.0.1` in early releases). The next `freenet network` boot read it back and listened only on loopback, where no gateway can reach it, so the node never found any peers. Since v0.2.145, a normal (non-gateway) node ignores a stored `network-address` of exactly `::1` or `127.0.0.1`. It listens on all interfaces instead (`::`, or `0.0.0.0` for an IPv4 value) and fixes `config.toml` for you. On that one boot the log shows a warning that starts `Ignoring network-address ... from config.toml`. You don't need to do anything. If you really do want a loopback bind, for example on a private test network, pass `--network-address` (or set `NETWORK_ADDRESS`) together with `--skip-load-from-network`, both after the subcommand. `--skip-load-from-network` is remembered once set; the address flag is not and has to be passed every time. Gateways, and any other loopback address such as `127.0.0.5`, are left alone.
-5. Still stuck → diagnostic report + ask in Matrix (§12).
+5. **Many joiners from one address** (since v0.2.162). A peer that has connected but not yet joined your node's peer set holds a slot in the transient budget (`transient-budget`, env `TRANSIENT_BUDGET`, default 2048). This limit is now enforced. One source, meaning one IPv4 address or one IPv6 /64, may hold at most a sixteenth of the budget and never less than 16 slots: 128 at the default. Further attempts from that source are refused until a slot frees up. When the whole budget is full, the node closes its oldest pending connection to admit the newcomer. `transient-ttl-secs` (env `TRANSIENT_TTL_SECS`, default 30) no longer frees a slot: an expired pending connection keeps its slot until it is promoted or closed. The log shows `Transient connection refused: its source holds its share of the budget` or `Transient budget spent: closed the oldest unpromoted connection`, printed only at the 1st, 2nd, 4th, 8th occurrence and so on. On an ordinary node these are rare. Many of them on a gateway point to a flood of connection attempts, not a fault in your node.
+6. Still stuck → diagnostic report + ask in Matrix (§12).
 
 ### 11.5 "No file descriptors available" or resource errors
 
@@ -1161,7 +1164,7 @@ only in the node's own log:
 If no warning appears at all, treat it as case 1 and give the contract time to
 arrive.
 
-**Apps refused for size (since v0.2.161).** Your node puts size limits on the web apps it unpacks. It refuses an app whose archive is over 100 MiB compressed, unpacks to more than 48 MiB, contains a single file over 32 MiB, or holds more than 4096 entries. It also refuses symbolic links, hard links, devices and other special entries; only ordinary files and folders are allowed. When an app is refused, the node removes anything it had already unpacked. Separately, a JavaScript or HTML page larger than 16 MiB is not served: that request gets an error instead. These limits protect your disk and memory from a malicious app built to expand enormously. They cannot be changed, and ordinary apps such as River are far below them. If an app never loads and the node log shows "web archive unpacks to more than", "web archive has more than 4096 entries", "refusing to unpack" or "over the … byte limit" (for a single oversized file, or a page over 16 MiB that is not served), the app is too large or malformed. The log gives the limits in bytes, not MiB. Waiting or reloading will not fix it; the app's publisher has to.
+**Apps refused for size (since v0.2.161; limits raised and reasons shown since v0.2.162).** Your node puts size limits on the web apps it unpacks. Since v0.2.162 it refuses an app whose archive is over 100 MiB compressed, unpacks to more than 256 MiB, contains a single file over 128 MiB, or holds more than 4096 files and folders. The 100 MiB and 4096 limits are unchanged. v0.2.161 used 48 MiB unpacked and 32 MiB per file, which refused some real media-heavy sites; if such a site would not load on v0.2.161, update. The node also refuses symbolic links, hard links, devices and other special entries, and any path that points outside the website. Only ordinary files and folders are allowed. When an app is refused, the node removes anything it had already unpacked. Separately, a JavaScript or HTML page larger than 16 MiB is not served: that request gets an error instead. These limits protect your disk and memory from a malicious app built to expand enormously. They cannot be changed. Since v0.2.162 the node keeps up to 512 MiB of unpacked apps on disk and unpacks at most 4 apps at a time. Another app opened while 4 are unpacking waits its turn instead of failing. Since v0.2.162 a refused app also tells you why. The browser shows an error that starts "failed unpacking contract: <key>:" followed by the reason. The node log shows the same reason after "web archive not unpacked:". Typical reasons are "the website unpacks to at least …, over this node's … limit for one website", "the website's file … is …, over this node's … limit for one file", "the website has more than 4096 files and folders" and "a website may hold only regular files and folders". Sizes are given in MiB, or in bytes when the size and the limit would round to the same MiB figure. A file found too large while a page is being served is still reported in bytes ("web archive entry … is … bytes, over the … byte limit"). A page over 16 MiB that is not served still logs bytes ("is larger than the … byte limit for rewritten pages"). Before v0.2.162 the browser showed only "failed unpacking contract: <key>". If the error has no reason after the key, the problem is on your machine (for example a full disk), not in the app; check the node log. If it does give a reason, waiting or reloading will not fix it. The app's publisher has to make the site smaller, usually by hosting large video, audio or images elsewhere and linking to them. For publishers: since v0.2.162 `fdev` warns when a website is over 10 MiB after compression and lists its three largest files. Its error for a site over the 50 MiB limit lists them too.
 
 ### 11.8 An app still shows its old version after an update
 
@@ -1171,7 +1174,7 @@ Since v0.2.146 your node tells the browser never to store an app's pages (`Cache
 
 If an app still looks partly old after a reload, the cause is most likely its scripts, styles or images. This change does not cover those, so your browser may still use a copy it saved earlier. Apps that give each new build's files new names are not affected. If you see this, do a hard reload (Ctrl+Shift+R, or Cmd+Shift+R on macOS) or clear the site's cached data for your node's address. If the page itself is still old after a normal reload, your node may not have received the update yet. Wait a moment and reload again.
 
-### 11.9 Changes you make in an app don't reach other people <span class="badge badge-upd">UPDATED</span>
+### 11.9 Changes you make in an app don't reach other people
 
 When you change something in an app, such as posting a message, your node applies it and sends it on to peers that follow that app's contract. Before v0.2.157, a change the node decided not to send, or failed to send, showed up only in debug-level log lines that release builds leave out. Since v0.2.157 the node counts what happened to each change and, once a minute when there was any activity, logs an INFO line `update_propagation_summary`, then an `update_propagation_summary contract detail` line for each of the 8 busiest contracts and one `update_propagation_summary …and N other contract(s)` line for the rest:
 
@@ -1447,7 +1450,7 @@ contract state, caches, the binary — is replaceable; the secrets are not.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
-## 17. Storage and Resource Tuning <span class="badge badge-upd">UPDATED</span>
+## 17. Storage and Resource Tuning
 
 Your node hosts a share of the network's contract state. Three dials bound it:
 
@@ -1877,6 +1880,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.24** | 2026-11-21 | 0.2.162 | App archive limits raised to 256 MiB unpacked and 128 MiB per file (rev 1.23's 48/32 MiB from v0.2.161 refused real sites), with clearer refusal messages and a 512 MiB unpacked-app cache; the dashboard's download totals now include QUIC traffic; joiners are held to a transient-connection budget per address. |
 | **1.23** | 2026-11-20 | 0.2.161 | Relayed requests can no longer crowd out your own apps (priority queues, per-address and node-wide relay caps, overloaded relays redirect); oversized or booby-trapped app archives are refused; a second cause of large transfers failing after days of uptime is fixed; contracts and delegates can no longer reach each other's host records; `--max-hosting-storage` is now enforced for state growth and eviction. |
 | **1.22** | 2026-11-18 | 0.2.160 | Unset `transport-quic` now means `prefer` on every platform; the QUIC crash breaker decides by role (peers: two QUIC-panic short runs, 24 h; gateways: 15 min doubling to 4 h, and supervised gateways restart themselves with exit 42 to get QUIC back); the startup telemetry report adds build commit and auto-update state; large transfers no longer fail after days of uptime, and large-state broadcasts use bounded memory. |
 | **1.21** | 2026-11-16 | 0.2.158–0.2.159 | The QUIC data ramp started in v0.2.158 (2026-11-16 02:30 UTC; rev 1.20's "no data on QUIC" held only up to v0.2.157), so stock nodes now move their data onto QUIC over 24 hours, bringing the QUIC-memory connection limit and the crash breaker's data cost with it; v0.2.159 keeps the ramp (an emergency stop was reverted before release); quiet QUIC paths are kept up to 120 s; a per-contract merge budget replaces the merge freeze. |
@@ -1902,8 +1906,17 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.23 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.24 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard | UPDATED | Download totals and per-peer received bytes now include QUIC traffic, so totals jump after upgrading | v0.2.162 |
+| §11.4 No peers | UPDATED | Pending joiners held to a transient-connection budget (2,048, at most 128 per address or /64); oldest pending evicted under load | v0.2.162 |
+| §11.7 App parts missing | UPDATED | Unpack limits raised to 256 MiB total and 128 MiB per file (supersedes rev 1.23's 48/32 MiB); 512 MiB unpacked-app cache, 4 unpacks at once; refusals explained to visitor and publisher; new log strings | v0.2.162 |
+
+**Revision 1.23 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -2147,25 +2160,26 @@ inline; kept so each edition's changes stay on the record):
 <div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:42%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:45%">19 sections + 5 appendices · 8 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:48%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:51%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:50%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:53%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:56%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:59%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:62%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:64%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:67%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:70%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:73%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:75%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:78%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:81%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:84%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:86%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:89%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:92%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:97%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:55%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:58%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:61%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:63%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:66%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:68%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:71%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:74%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:76%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:79%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:82%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:84%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:87%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:90%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:92%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:97%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.24</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -2175,7 +2189,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.23 · covers Freenet v0.2.161 ·
+<p class="footer-note">Freenet User Manual rev 1.24 · covers Freenet v0.2.162 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
