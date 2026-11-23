@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.24</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.162</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-11-21</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.25</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.163</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-11-23</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -338,7 +338,7 @@ first, so setting `home` is still worth doing.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
+## 3. First Run and the Dashboard
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -501,7 +501,7 @@ If you run a node that many people reach through a reverse proxy: a single deleg
 
 **Saves no longer pause for minutes (since v0.2.147).** When an app saves something, such as a message, a post or a settings change, your node first sends a short summary to a nearby peer to see whether it already has that data. If the reply to that check got lost, older nodes waited a timeout that grew with the size of the app's data before they sent the full data. For River rooms that wait was about 1.5 to 2.5 minutes. The save did go through in the end, but the app looked frozen in the meantime. Since v0.2.147 the node stops waiting for a lost reply after a few seconds (at most about 15 with default settings) and sends the full data straight away. You don't need to do anything, and there is nothing to configure. If your node log shows the line "PUT summary-first: probe timed out; falling through to full-state driver", this fallback ran. It is normal and the save still completes. If a save still takes minutes, the cause is something else: work through §7 and §11.
 
-### 4.1 When an app asks to run in the background
+### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -597,6 +597,8 @@ These requests are accepted only from the same machine. Changing `--ws-api-addre
 - Permission prompts require a user token, and each user sees only their own.
 
 **What visitors to a hosted node see (since v0.2.156).** Every app on a hosted node has a bar above it that the app cannot hide. It now reads "Stored encrypted on this server. Install Freenet for full privacy." Before v0.2.156 it read "Hosted proxy, not private. Your data is stored on this server." and gave no way forward. "Freenet" in the bar links to https://freenet.org/, and "Install Freenet" links to https://freenet.org/quickstart/. The Account menu's "Your own peer" section and the hint shown after "Move to my peer" also link to the quickstart, so a visitor with no peer of their own knows where to get one. These links open in a new tab and leave the hosted session where it was. There is nothing to configure, and nodes without hosted mode show no bar.
+
+**Per-user operation limits on a hosted node.** In hosted mode, each connection that presents a user token (`userToken`) may send contract operations, delegate operations and node queries at a sustained 10 per second (`--per-user-op-rate-limit`, env `PER_USER_OP_RATE_LIMIT`, config `per-user-op-rate-limit`; `0` turns the limit off). Each user starts with a burst allowance of up to 500 operations, which refills at the sustained rate (`--per-user-op-burst`, env `PER_USER_OP_BURST`, config `per-user-op-burst`). Connections without a user token, and nodes not in hosted mode, are never limited. Before v0.2.163 the burst default was 100. That was too low: one River page load sends about 135 operations in its first second or so, so some were refused and the app could sit stalled for about 10 seconds. Since v0.2.163 a refusal names what it refused, for example "operation rate limit exceeded for contract <id>; retry shortly" or "operation rate limit exceeded for delegate <key>; retry shortly", so the app knows which request to retry. Requests with no single target, such as node queries, get "operation rate limit exceeded; retry shortly". At debug log level the node logs "Rejecting operation: per-user operation rate limit exceeded". If you set `per-user-op-burst` to a low value yourself, consider raising it so app start-up bursts are not refused.
 
 A node that does not use hosted mode behaves as before, apart from the local-only unregister rule.
 
@@ -714,7 +716,7 @@ macOS/Windows paths.
 > copies alongside your live config is safe again — but if you have been relying
 > on a differently named file being found, rename it to `config.toml`.
 
-### 6.2 Options you're most likely to touch
+### 6.2 Options you're most likely to touch <span class="badge badge-upd">UPDATED</span>
 
 Every option can be given as a CLI flag or an environment variable:
 
@@ -747,6 +749,8 @@ Every option can be given as a CLI flag or an environment variable:
 > file, is left alone.
 
 **Capping your node's upload (since v0.2.148).** If you set `total-bandwidth-limit` (in bytes per second, in `config.toml` or as `--total-bandwidth-limit`), it is now a true limit on everything your node sends: app data, handshakes, acknowledgements, keepalives and resends, across all connections together. Before v0.2.148 it only set the speed for each connection, so the node as a whole could send more than you asked for, especially with many peers or a high `min-bandwidth-per-connection`. Now `min-bandwidth-per-connection` is a floor inside the total. It never takes you over the limit, and if you set it higher than the total it is lowered to match. The limit holds on average, so short bursts can go over it. The **Data Transfer** chart's upload rate should settle at or below your limit. A value of 0 means no limit, the same as leaving it unset (since v0.2.156): there is no node-wide cap and no per-connection share, and `bandwidth-limit` applies if you set it. The log says `total-bandwidth-limit is 0, which is no limit: no node-wide egress cap and no per-connection share is applied, and bandwidth-limit applies if set`. Before v0.2.156, a total of 0 still held each UDP connection to about 1 MB/s and made the node ignore `bandwidth-limit`. When the limit is on, the log says so at startup (`Node-wide egress cap active ...`). It also warns you if the limit is too low for the number of connections your node allows.
+
+**Legacy UDP tuning settings are being retired (warning since v0.2.163).** Five settings only tune the older UDP transport: `min-bandwidth-per-connection`, `streaming-threshold`, `ledbat-min-ssthresh`, `congestion-control` and `bbr-startup-rate`. If your `config.toml` or command line changes any of them from its default, your node logs one warning at startup that lists them: "These settings tune the legacy UDP transport, which a future release removes. After that release they are accepted and ignored, so you can delete them from your config." `min-bandwidth-per-connection` and `bbr-startup-rate` have no default, so giving either one any value triggers the warning. The other three trigger it only when their value differs from the default: `streaming-threshold` 65536 bytes, `ledbat-min-ssthresh` 102400 bytes (100 KB), and `congestion-control` `fixedrate` (in any capitalisation). For now these settings still work exactly as before, and a node that leaves them at their defaults sees no warning. Once the legacy UDP transport is removed, these keys and flags will still be accepted, so your config file and service unit keep working, but they will have no effect. You can delete them at any time. Where this manual suggests raising `min-bandwidth-per-connection`, bear in mind that this setting is going away.
 
 **Transfers on a busy connection take turns (since v0.2.149).** Under `total-bandwidth-limit`, each connection now sends its transfers' pieces in turn instead of in random order, so the transfers on a connection move forward at the same pace; before, an unlucky transfer could wait more than 5 seconds for its next piece and fail partway through. With N transfers on a connection that gets C bytes per second, each sends a 1,200-byte piece about every N × 1200 / C seconds, so about 5 × C / 1200 transfers fit at once (roughly 80 at 20 KB/s). If a transfer's next piece would have to wait past the 5-second limit, the node refuses it at once instead of letting it stall: the transfer fails with "next fragment refused: its connection's queue would reach the egress deadline", and its operation retries as it normally does. If this happens often, raise `min-bandwidth-per-connection` or `total-bandwidth-limit`. Since v0.2.156 the node-wide limit is shared in turn too. Before, transfers waiting for it grabbed room in random order, the experimental QUIC path won most of it, and an unlucky transfer could wait past the 5-second limit and fail. Now every waiting transfer and QUIC connection queues in one line and is served roughly in arrival order, with the same N × 1200 / C spacing as above, counting every waiting sender on the node. Connections are not isolated from each other: a peer that runs many transfers through your node gets a correspondingly larger share of the limit.
 
@@ -1079,7 +1083,7 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 
 **A bad packet from a peer no longer crashes the connection (since v0.2.148).** Before v0.2.148, two kinds of packet from another peer could make your node panic while reading from that peer. One was a packet too short to be valid. The other was a packet that came from a real connected peer but that your node could not read, for example one using a message format from a newer Freenet release. Your log showed a panic message and your node lost its connection to that peer. While newer and older versions were mixed on the network, this could keep happening. The rest of the node kept running. Since v0.2.148 there is no panic. A packet that is too short is treated like any other packet that fails decryption: it is dropped quietly, but many of these in a short time can still close the connection. An unreadable packet from a connected peer is dropped, the connection stays open, and the node writes one warning per connection: `Dropping authenticated packet that does not decode; later ones on this connection log at debug`. The warning names the peer's address and version. It is harmless and there is nothing to configure. If you see it for many different peers, your node may be out of date: see §11.3.
 
-### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
+### 11.4 No peers / can't join the network
 
 0. **Check your version first** (v0.2.133): the transport handshake enforces a
    minimum compatible version, so a node that is too far out of date is
@@ -1131,7 +1135,7 @@ lists two things your node measures but does **not** count:
 Either reads "not measured" until the node has first looked at it. Neither is
 charged against the disk budget yet, so a budget alone does not bound them.
 
-### 11.7 An app loads, but parts of it are missing <span class="badge badge-upd">UPDATED</span>
+### 11.7 An app loads, but parts of it are missing
 
 Since v0.2.137 an app asset your node cannot serve comes back as a plain **404**
 instead of a 500 carrying an operating-system error message in the page. That is
@@ -1880,6 +1884,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.25** | 2026-11-23 | 0.2.163 | Hosted nodes: per-user burst raised from 100 to 500 operations and refusals now name the refused request; five legacy UDP tuning settings now log a startup warning that a future release will ignore them. |
 | **1.24** | 2026-11-21 | 0.2.162 | App archive limits raised to 256 MiB unpacked and 128 MiB per file (rev 1.23's 48/32 MiB from v0.2.161 refused real sites), with clearer refusal messages and a 512 MiB unpacked-app cache; the dashboard's download totals now include QUIC traffic; joiners are held to a transient-connection budget per address. |
 | **1.23** | 2026-11-20 | 0.2.161 | Relayed requests can no longer crowd out your own apps (priority queues, per-address and node-wide relay caps, overloaded relays redirect); oversized or booby-trapped app archives are refused; a second cause of large transfers failing after days of uptime is fixed; contracts and delegates can no longer reach each other's host records; `--max-hosting-storage` is now enforced for state growth and eviction. |
 | **1.22** | 2026-11-18 | 0.2.160 | Unset `transport-quic` now means `prefer` on every platform; the QUIC crash breaker decides by role (peers: two QUIC-panic short runs, 24 h; gateways: 15 min doubling to 4 h, and supervised gateways restart themselves with exit 42 to get QUIC back); the startup telemetry report adds build commit and auto-update state; large transfers no longer fail after days of uptime, and large-state broadcasts use bounded memory. |
@@ -1906,8 +1911,16 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.24 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.25 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §4.1 Background permission (hosted-mode notes) | UPDATED | Per-user operation burst 100 → 500 (River's startup no longer refused); refusals name the contract or delegate | v0.2.163 |
+| §6.2 Options | UPDATED | Startup warning when legacy UDP tuning settings are set; they still work but a future release ignores them | v0.2.163 |
+
+**Revision 1.24 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -2159,27 +2172,28 @@ inline; kept so each edition's changes stay on the record):
 <div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:40%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:42%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:45%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:48%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:47%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:50%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:53%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:52%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:55%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:58%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:61%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:63%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:66%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:68%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:71%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:74%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:76%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:79%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:82%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:84%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:87%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:90%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:92%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:97%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.24</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:57%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:60%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:62%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:65%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:67%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:70%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:72%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:75%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:77%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:80%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:82%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:85%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:87%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:90%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:92%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.24</span><span class="growth-bar" style="width:97%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.25</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -2189,7 +2203,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.24 · covers Freenet v0.2.162 ·
+<p class="footer-note">Freenet User Manual rev 1.25 · covers Freenet v0.2.163 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
