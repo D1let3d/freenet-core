@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.26</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.164</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-11-24</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.27</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.166</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-11-25</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -223,7 +223,7 @@ $ freenet --version
 This prints the version plus the exact git commit and build timestamp — you'll
 use it again in the self-check (Part IV).
 
-### 2.6 Docker
+### 2.6 Docker <span class="badge badge-upd">UPDATED</span>
 
 Since v0.2.133 there is an official container image,
 `ghcr.io/freenet/freenet-core`, published for every stable release
@@ -235,6 +235,8 @@ docker run -d --name freenet-node --network host \
     -v freenet-data:/data --restart unless-stopped \
     ghcr.io/freenet/freenet-core:latest
 ```
+
+Since v0.2.165, `latest` points to the highest published stable release, and `0.2` to the highest stable 0.2.x release. Re-publishing an older release, for example to rebuild its image, adds only that release's own version tags (`v0.2.NNN` and `0.2.NNN`). It no longer moves `latest` or `0.2` back to that older version. Prereleases never move either tag. `latest` never moves backwards, but if the publish step could not list the releases, it leaves `latest` and `0.2` where they were until a maintainer re-runs the publish, so they can lag a new release. If you want a container to stay on one version, use the exact version tag.
 
 Then open `http://127.0.0.1:7509/` as usual. Three things to know:
 
@@ -338,7 +340,7 @@ first, so setting `home` is still worth doing.
 
 Full details are in `docs/nix.md` in the source repository.
 
-## 3. First Run and the Dashboard
+## 3. First Run and the Dashboard <span class="badge badge-upd">UPDATED</span>
 
 If you installed with the service (the default), the node is already running.
 Open the **dashboard**:
@@ -394,6 +396,10 @@ failure count was always red, *even when it read 0*, and a contract marked
 A full hosting cache is labelled *"Full is normal here"* rather than coloured,
 because a cache is supposed to fill. The practical rule: if you learned to
 ignore red on the dashboard, unlearn it. Red now means something.
+
+**"Version mismatch" on the dashboard.** If a gateway refuses your node because the gateway runs a newer Freenet version, the dashboard shows your version, the version the gateway requires, and a command to install it: `cargo install --force freenet --version X.Y.Z`. Since v0.2.165, the command appears only when both your version and the gateway's are normal version numbers, such as `0.2.166` or `1.2.3-rc.1`, of at most 64 characters, and the gateway's version is newer than yours. If the gateway sends anything else, for example extra text after the version, the dashboard says "the gateway reported a version this node could not read. Update Freenet to the latest release." and shows no command. In that case, update the way you normally do: let auto-update run, or install the latest release. Do not type in a version or other text taken from a gateway's message. If the peer's version is older than yours, the dashboard says the peer "runs an incompatible version" and does not tell you to install anything. From v0.2.165 on, a node reports a connection failure with the cause "remote reported an unrecognised protocol version" when a peer sends an unreadable version. It also keeps only the first 64 characters of any other error text a peer sends.
+
+**No false "update required" from older peers (since v0.2.165).** Before v0.2.165, a peer still running an older release could refuse a connection from your up-to-date node. When that happened, the dashboard status card could say *"update required"* and offer a `cargo install` command for that *older* version, and the refusal could turn your node's health to trouble. Your node did not need updating, and running that command would have downgraded it. Since v0.2.165 the dashboard shows a version mismatch ("update required") only when the peer that refused you runs a newer version than yours. A refusal from an older peer appears as an ordinary connection failure, for example *"peer runs an outdated version 0.2.117 and refused this connection"* or *"peer runs an incompatible version 0.2.117 (this node runs 0.2.165)"*, and on its own it no longer turns health to trouble. Your node keeps connecting to other peers as before, and the refusal does not trigger an auto-update. There is nothing to configure. If you see "update required" on v0.2.165 or later, check the version it names. It should be newer than the one `freenet --version` prints. If it is, update your node as described in the manual's update instructions.
 
 If you skipped the service, you can run a node in the foreground:
 
@@ -501,7 +507,7 @@ If you run a node that many people reach through a reverse proxy: a single deleg
 
 **Saves no longer pause for minutes (since v0.2.147).** When an app saves something, such as a message, a post or a settings change, your node first sends a short summary to a nearby peer to see whether it already has that data. If the reply to that check got lost, older nodes waited a timeout that grew with the size of the app's data before they sent the full data. For River rooms that wait was about 1.5 to 2.5 minutes. The save did go through in the end, but the app looked frozen in the meantime. Since v0.2.147 the node stops waiting for a lost reply after a few seconds (at most about 15 with default settings) and sends the full data straight away. You don't need to do anything, and there is nothing to configure. If your node log shows the line "PUT summary-first: probe timed out; falling through to full-state driver", this fallback ran. It is normal and the save still completes. If a save still takes minutes, the cause is something else: work through §7 and §11.
 
-### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
+### 4.1 When an app asks to run in the background
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -786,6 +792,8 @@ If you leave `total-bandwidth-limit` unset (the default) or set it to 0, none of
 **A silent QUIC path is kept up to 120 seconds (since v0.2.159).** If a peer goes silent on a QUIC path that carries data, new data moves to the normal UDP connection after about 10–15 seconds, so nothing new is lost. Before v0.2.159 the node also closed the QUIC path after about 70 seconds of silence, and one-packet messages still waiting for an acknowledgement on it were lost. Since v0.2.159 a path that still has its UDP connection stays open: if the peer is heard again within 120 seconds those messages are delivered; if not, the path ends at 120 seconds. A busy path can still close earlier, about 15–25 seconds into an outage, if its sends stop moving. A QUIC-only path with no UDP connection still closes at about 70 seconds. There is nothing to configure. With telemetry on, QUIC path closes your node makes itself are now reported as `liveness_tx` or `closed_tx` instead of `reset`.
 
 **Some connections now start on QUIC (since v0.2.164).** Until v0.2.163, every peer connection was first set up over UDP and only then upgraded to a QUIC path. Since v0.2.164, when two peers both run v0.2.164 or later, both run `transport-quic = "prefer"` (the unset default) and both have their QUIC endpoint up, about a quarter of those peer pairs set up their connection directly over QUIC. The pairs are picked by a fixed hash of the two peers' keys, and this choice is separate from the data ramp. The node that accepts the connection decides, using the lower of the two releases' shares, so a pair where either side runs an older release keeps the old setup. If a direct QUIC setup fails, the node falls back to the normal UDP setup, so the connection still forms. If this happens with 3 different peers and UDP then works, the node stops trying direct QUIC connects for 6 hours and logs at INFO "QUIC-native connects off after native failures with distinct peers" (or, for connections it accepts, "QUIC-native decisions off as acceptor after native failures with distinct joiners"). This is a safety fallback, not a fault, and needs no restart. Connections to gateways are not affected yet: joining through a gateway still starts over UDP. There is no setting for the share. A node on `transport-quic = "shadow"` or `"off"` never sets up connections this way. With telemetry on, the node reports how its direct QUIC setups ended (`connect_native_setup_*`), with no peer address.
+
+**Fewer lost messages on direct QUIC connections (since v0.2.165).** On a connection that started directly over QUIC, a message sometimes has to wait for the other peer to allow another stream. Before v0.2.165, if that wait passed its deadline (1 s for a small message, 2 s for a large message or a stream), the node dropped the message, because such a connection has no UDP fallback. Since v0.2.165 the node tries the same connection up to two more times and drops the message only after about 3 s (small message) or 6 s (large message or stream). Nothing reached the other peer on a failed attempt, so a retry cannot deliver a message twice. There is nothing to configure. With telemetry on, `not_opened_retried` and `not_opened_retry_sent` count the retries and the messages they saved. `native_short_queue_full` counts messages refused because the connection's send queue was already full.
 
 To keep your data on UDP, set `quic-data-percent = 0` (or `transport-quic = "shadow"`); either also keeps your full connection limit. To turn QUIC off entirely, set `transport-quic = "off"`; since v0.2.157 that is deprecated and logs `transport-quic = "off" is deprecated: QUIC is to replace the UDP transport, and a later release will not offer a way to turn it off`, so plan for it to go away. An unknown or misspelled value is treated as `off` and logs "Unknown transport-quic value; QUIC stays off" (no deprecation warning). If the endpoint cannot be created, the node logs a warning and runs with QUIC off. With telemetry on, the node also reports its QUIC endpoint state (`up`, `off_config`, `off_platform`, `off_breaker`, `off_bind`, `off_abort`, `died` or `unknown`) to the same central endpoint, with no peer address. `quic-max-paths` (`--quic-max-paths`, `FREENET_QUIC_MAX_PATHS`, enforced since v0.2.156) caps how many QUIC paths the node holds at once, counting paths being offered or dialed. It defaults to `max-number-of-connections`, a larger value is lowered to that, `0` turns QUIC upgrades off, and a value that is not a whole number is ignored with a warning.
 
@@ -1100,7 +1108,7 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 
 **A bad packet from a peer no longer crashes the connection (since v0.2.148).** Before v0.2.148, two kinds of packet from another peer could make your node panic while reading from that peer. One was a packet too short to be valid. The other was a packet that came from a real connected peer but that your node could not read, for example one using a message format from a newer Freenet release. Your log showed a panic message and your node lost its connection to that peer. While newer and older versions were mixed on the network, this could keep happening. The rest of the node kept running. Since v0.2.148 there is no panic. A packet that is too short is treated like any other packet that fails decryption: it is dropped quietly, but many of these in a short time can still close the connection. An unreadable packet from a connected peer is dropped, the connection stays open, and the node writes one warning per connection: `Dropping authenticated packet that does not decode; later ones on this connection log at debug`. The warning names the peer's address and version. It is harmless and there is nothing to configure. If you see it for many different peers, your node may be out of date: see §11.3.
 
-### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
+### 11.4 No peers / can't join the network
 
 0. **Check your version first** (v0.2.133): the transport handshake enforces a
    minimum compatible version, so a node that is too far out of date is
@@ -1221,6 +1229,8 @@ A single minute with targets but no sends is not a fault: the node can hold a se
 
 **Your node checks that your own changes arrived (since v0.2.164).** Before v0.2.164, once your node handed a change on for sending, it assumed the peer had it. If the send was lost on the way, peers that host the same contract could stay behind for days with no error anywhere, and a restart did not help. Since v0.2.164, about 5 seconds after a change made by one of your apps, your node asks each peer it sent the change to (up to 32) whether it now has that state. A peer that is behind gets the missing part again. If it is still behind 5 seconds later, the node sends it the whole contract state. The node sends at most one such full copy at a time. It never sends full copies to the same peer for the same contract less than a minute apart. If a peer has not moved since its last full copy, it waits 10 minutes. A peer whose full copy failed is skipped for a while, up to a day after repeated failures. This adds a few small requests per change and sometimes one full-state transfer. There is nothing to configure. When there was any checking in the last minute, the node also logs an INFO line `update_propagation_summary verify`. In it, `verify_peer_converged` counts peers that had your change, `verify_peer_stale` counts peers that were behind, and `verify_forced_full_sent` / `verify_forced_delivered` count full copies sent and confirmed. `verify_peer_stale` going up now and then is normal. If `verify_peer_stale_confirm` keeps rising while `verify_forced_delivered` stays at 0, your changes are not getting through to some peers. Include a few of these lines when you ask for help (§12).
 
+**GET replies for the wrong contract are not hosted (since v0.2.165).** When your node fetches a contract from a peer, it now hosts the reply only if the reply names the contract it asked for. It treats the reply as evidence that the peer holds the contract only if your node accepted the state. Before v0.2.165, a reply whose state your node had rejected, or a reply for a different contract, could still count as proof that the peer held the contract. A reply for the wrong contract could also end up in your node's hosting storage. Now a mismatched reply is dropped, and the node logs a WARN line: "get: reply does not match the requested contract; not hosting it (logged at doubling counts)". To keep the log small, the line appears only on the 1st, 2nd, 4th, 8th, ... occurrence. Each line has a `seen` field, which is the total count since the node started, across all peers. An occasional line is harmless. If the count climbs quickly, some peer is sending bad replies, but the line does not say which one. There is nothing to configure.
+
 ## 12. Getting Help
 
 1. **Generate a diagnostic report first** (§10) — it answers 90% of the
@@ -1237,7 +1247,7 @@ A single minute with targets but no sends is not a fault: the node can hold a se
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works
+## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -1338,6 +1348,8 @@ There is also a hard limit of 320 MiB of release downloads per node in any 24 ho
 
 `freenet service report` shows the current state, for example "Update to 0.2.NNN failed 2 time(s) in a row (next attempt in 95 min). Last error: …", and the log shows "Staying on the current version and trying the update again after a cooldown". A node a few hours behind the latest release while that line keeps appearing is working as intended. If it persists, check that the node can reach github.com.
 
+**A node that cannot join checks for an update sooner (since v0.2.166).** If your node has no connections at all, and three bootstrap rounds in a row have failed (each round tries every gateway it knows), it checks GitHub right away, unless a check already ran in the last hour (the startup check counts). Before v0.2.166 it waited for its next scheduled check, which could be several hours away. This matters when the network has moved to a release your node can no longer talk to: the node can now find that release, and stage it the same way as any other update, without waiting for the next scheduled check, which can be up to about 7.5 hours away. The log shows "No connection after repeated gateway handshake failures: checking GitHub" at INFO, then either "Handshake-failure check: newer version on GitHub, triggering auto-update" (INFO) or, if that version is pinned bad after a rollback or held back by this machine's install gate, "Handshake-failure check: newer version is locally blocked; not triggering auto-update" (WARN). The check runs at most once an hour while the node stays disconnected. The hourly limit is kept in memory and resets when the node restarts. The check is skipped while a release is on its download cooldown, and a skipped check does not use up the hour. It is also skipped when it would use a LOCKED-OUT node's once-a-day retry, because the node is probably offline and that retry would be wasted. There is no setting for this check. It is off whenever auto-update is off (`--disable-auto-update`, or a dev/dirty build).
+
 ## 14. Updating Manually
 
 ### 14.1 Commands
@@ -1428,7 +1440,7 @@ same page.
 
 # Part VII — Advancing: Power Use
 
-## 16. Secrets: Protecting Your Keys and Private Data <span class="badge badge-upd">UPDATED</span>
+## 16. Secrets: Protecting Your Keys and Private Data
 
 Delegates keep your private data (identity keys, chat-room keys, credentials)
 **encrypted at rest** on your node. The design in one paragraph: every secret is
@@ -1909,6 +1921,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.27** | 2026-11-25 | 0.2.165–0.2.166 | A node that cannot join checks for an update without waiting for its next scheduled check; the dashboard no longer says "update required" when an older peer refuses you, and ignores malformed gateway versions; Docker `latest` never moves backwards; unrequested GET replies are no longer hosted; direct-QUIC sends retry instead of dropping. |
 | **1.26** | 2026-11-24 | 0.2.164 | About a quarter of v0.2.164 peer pairs now connect directly over QUIC; a QUIC library panic no longer kills the node; background delegate runs may message other delegates; failed secret reads no longer look like missing secrets; GET responses use bounded memory; your own changes are checked and repaired at co-hosts; two join fixes. |
 | **1.25** | 2026-11-23 | 0.2.163 | Hosted nodes: per-user burst raised from 100 to 500 operations and refusals now name the refused request; five legacy UDP tuning settings now log a startup warning that a future release will ignore them. |
 | **1.24** | 2026-11-21 | 0.2.162 | App archive limits raised to 256 MiB unpacked and 128 MiB per file (rev 1.23's 48/32 MiB from v0.2.161 refused real sites), with clearer refusal messages and a 512 MiB unpacked-app cache; the dashboard's download totals now include QUIC traffic; joiners are held to a transient-connection budget per address. |
@@ -1937,8 +1950,19 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.26 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.27 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §2.6 Docker | UPDATED | `latest` and `0.2` never move to an older release; left in place if the release list cannot be read | v0.2.165 |
+| §3 Dashboard | UPDATED | No "update required" when an older peer refuses you; mismatch hints use only well-formed gateway versions | v0.2.165 |
+| §6.2 Options | UPDATED | A direct-QUIC send whose stream did not open is retried instead of dropped | v0.2.165 |
+| §11.9 Changes don't reach others | UPDATED | GET replies are hosted and counted only when accepted and matching the request | v0.2.165 |
+| §13 Auto-update | UPDATED | After 3 bootstrap rounds with no connection, the node checks GitHub (at most hourly) | v0.2.166 |
+
+**Revision 1.26 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -2209,29 +2233,30 @@ inline; kept so each edition's changes stay on the record):
 <div class="growth-row"><span class="growth-label">rev 1.1</span><span class="growth-bar" style="width:39%">18 sections (+1 subsection) + 5 appendices · 10 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:42%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:44%">19 sections + 5 appendices · 8 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:47%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:46%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:49%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:52%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:54%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:51%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:53%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:56%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:59%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:61%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:64%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:66%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:68%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:71%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:73%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:76%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:78%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:81%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:83%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:85%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:88%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:90%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:93%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.24</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.25</span><span class="growth-bar" style="width:98%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.26</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:58%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:60%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:63%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:65%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:67%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:70%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:72%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:74%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:77%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:79%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:81%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:84%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:86%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:88%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:91%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.24</span><span class="growth-bar" style="width:93%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.25</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.26</span><span class="growth-bar" style="width:98%">19 sections (+6 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.27</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 5 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -2241,7 +2266,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.26 · covers Freenet v0.2.164 ·
+<p class="footer-note">Freenet User Manual rev 1.27 · covers Freenet v0.2.166 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
