@@ -7,9 +7,9 @@
 <p class="cover-subtitle">Everything you need to install, use, check, fix, and grow with your Freenet node.</p>
 
 <table class="cover-meta">
-<tr><td>Manual revision</td><td><strong>1.27</strong></td></tr>
-<tr><td>Written against Freenet</td><td><strong>v0.2.166</strong></td></tr>
-<tr><td>Date</td><td><strong>2026-11-25</strong></td></tr>
+<tr><td>Manual revision</td><td><strong>1.28</strong></td></tr>
+<tr><td>Written against Freenet</td><td><strong>v0.2.167</strong></td></tr>
+<tr><td>Date</td><td><strong>2026-11-27</strong></td></tr>
 <tr><td>Source</td><td><code>docs/user-manual/</code> in freenet-core</td></tr>
 </table>
 </div>
@@ -223,7 +223,7 @@ $ freenet --version
 This prints the version plus the exact git commit and build timestamp — you'll
 use it again in the self-check (Part IV).
 
-### 2.6 Docker <span class="badge badge-upd">UPDATED</span>
+### 2.6 Docker
 
 Since v0.2.133 there is an official container image,
 `ghcr.io/freenet/freenet-core`, published for every stable release
@@ -413,7 +413,7 @@ with no subcommand does the same thing — network mode is the default.)
 The first startup fetches the current **gateway list** from
 `https://freenet.org/keys/gateways.toml` (if that fetch fails, it uses its
 cached copy plus the gateways built into the binary; see §11.4), connects to a
-gateway over UDP, and joins the network. Within a short time the node acquires peer connections of its
+gateway (over QUIC when the gateway supports it, otherwise UDP; see §8), and joins the network. Within a short time the node acquires peer connections of its
 own and no longer depends on the gateway.
 
 ## 4. Using Freenet Applications
@@ -507,7 +507,7 @@ If you run a node that many people reach through a reverse proxy: a single deleg
 
 **Saves no longer pause for minutes (since v0.2.147).** When an app saves something, such as a message, a post or a settings change, your node first sends a short summary to a nearby peer to see whether it already has that data. If the reply to that check got lost, older nodes waited a timeout that grew with the size of the app's data before they sent the full data. For River rooms that wait was about 1.5 to 2.5 minutes. The save did go through in the end, but the app looked frozen in the meantime. Since v0.2.147 the node stops waiting for a lost reply after a few seconds (at most about 15 with default settings) and sends the full data straight away. You don't need to do anything, and there is nothing to configure. If your node log shows the line "PUT summary-first: probe timed out; falling through to full-state driver", this fallback ran. It is normal and the save still completes. If a save still takes minutes, the cause is something else: work through §7 and §11.
 
-### 4.1 When an app asks to run in the background
+### 4.1 When an app asks to run in the background <span class="badge badge-upd">UPDATED</span>
 
 Normally the private half of an app — its delegate — runs only while the app is
 open. From **v0.2.138** an app can ask to keep running with **no tab open**: a
@@ -566,6 +566,8 @@ long it may run and how many contract operations it may perform, per delegate an
 across the node as a whole. One that exhausts its budget is refused with a
 "retry later" rather than being left to spin — so granting this permission
 cannot hand one app your whole node.
+
+**Waiting on your node no longer counts against a delegate's time limit (since v0.2.167).** Each contract or delegate run gets about 5 seconds of its own running time. Before v0.2.167, that 5 seconds also counted time the run spent waiting for your node, for example to read or save a secret or to read a contract's state. On a slow or busy node, a working delegate such as River's could run out of time and fail with a timeout error. Since v0.2.167, time spent waiting for the node has its own allowance of 7.5 seconds. So one run can now take up to about 12.5 seconds in total, up from about 5. A run that is stuck still stops. A run that keeps calling the node in a loop can now use somewhat more of your node's CPU before it is stopped. There is nothing to configure. When a run is stopped, the node usually logs at WARN "WASM execution timed out (epoch deadline exceeded)". The `cause` field says why: `guest_budget` means the code itself ran too long, `host_call_cap` means it spent too long waiting on the node, and `epoch` means the node did not record which limit was hit. A timeout while the code is still starting up logs "WASM execution timed out (epoch deadline exceeded during guest entry)" instead, without these fields. `host_call_ms` and `host_calls` show how much waiting there was. If you often see `host_call_cap`, your node's storage or CPU is probably overloaded.
 
 > **What this permission does not protect you from.** It governs *apps*. It is
 > not a barrier against other software already running on your computer: any
@@ -791,7 +793,7 @@ If you leave `total-bandwidth-limit` unset (the default) or set it to 0, none of
 
 **A silent QUIC path is kept up to 120 seconds (since v0.2.159).** If a peer goes silent on a QUIC path that carries data, new data moves to the normal UDP connection after about 10–15 seconds, so nothing new is lost. Before v0.2.159 the node also closed the QUIC path after about 70 seconds of silence, and one-packet messages still waiting for an acknowledgement on it were lost. Since v0.2.159 a path that still has its UDP connection stays open: if the peer is heard again within 120 seconds those messages are delivered; if not, the path ends at 120 seconds. A busy path can still close earlier, about 15–25 seconds into an outage, if its sends stop moving. A QUIC-only path with no UDP connection still closes at about 70 seconds. There is nothing to configure. With telemetry on, QUIC path closes your node makes itself are now reported as `liveness_tx` or `closed_tx` instead of `reset`.
 
-**Some connections now start on QUIC (since v0.2.164).** Until v0.2.163, every peer connection was first set up over UDP and only then upgraded to a QUIC path. Since v0.2.164, when two peers both run v0.2.164 or later, both run `transport-quic = "prefer"` (the unset default) and both have their QUIC endpoint up, about a quarter of those peer pairs set up their connection directly over QUIC. The pairs are picked by a fixed hash of the two peers' keys, and this choice is separate from the data ramp. The node that accepts the connection decides, using the lower of the two releases' shares, so a pair where either side runs an older release keeps the old setup. If a direct QUIC setup fails, the node falls back to the normal UDP setup, so the connection still forms. If this happens with 3 different peers and UDP then works, the node stops trying direct QUIC connects for 6 hours and logs at INFO "QUIC-native connects off after native failures with distinct peers" (or, for connections it accepts, "QUIC-native decisions off as acceptor after native failures with distinct joiners"). This is a safety fallback, not a fault, and needs no restart. Connections to gateways are not affected yet: joining through a gateway still starts over UDP. There is no setting for the share. A node on `transport-quic = "shadow"` or `"off"` never sets up connections this way. With telemetry on, the node reports how its direct QUIC setups ended (`connect_native_setup_*`), with no peer address.
+**Connections start on QUIC, including gateway joins (since v0.2.167).** Until v0.2.163, every peer connection was first set up over UDP and only then upgraded to a QUIC path. From v0.2.164 to v0.2.166, about a quarter of eligible peer pairs set up their connection directly over QUIC. Since v0.2.167, every pair of peers that both run `transport-quic = "prefer"` (the unset default) and both have their QUIC endpoint up sets up its connection directly over QUIC. The pairs are picked by a fixed hash of the two peers' keys, and this choice is separate from the data ramp. The node that accepts the connection decides, using the lower of the two releases' shares. So a pair where one side runs v0.2.164 to v0.2.166 stays at about a quarter, and a pair where either side runs an older release keeps the old setup. If a direct QUIC setup fails, the node falls back to the normal UDP setup, so the connection still forms. If this happens with 3 different peers and UDP then works, the node stops trying direct QUIC connects for 6 hours and logs at INFO "QUIC-native connects off after native failures with distinct peers" (or, for connections it accepts, "QUIC-native decisions off as acceptor after native failures with distinct joiners"). This is a safety fallback, not a fault, and needs no restart. Joining through a gateway can now start on QUIC too: a joining node on v0.2.167 or later tries QUIC first when the gateway index marks that gateway as native, and falls back to UDP if that fails. After a failed QUIC join, the node doesn't try QUIC with that gateway again for 10 minutes. If you run a gateway: since v0.2.167, a gateway on `prefer` accepts direct QUIC joins from nodes it has not seen before, whether or not it is listed in the index. A gateway on `transport-quic = "shadow"` or `"off"` does not accept them, and setting one of those is the only way to turn this off. There is no setting for the share. A node on `"shadow"` or `"off"` never sets up connections this way. With telemetry on, the node reports how its direct QUIC setups ended (`connect_native_setup_*`), with no peer address.
 
 **Fewer lost messages on direct QUIC connections (since v0.2.165).** On a connection that started directly over QUIC, a message sometimes has to wait for the other peer to allow another stream. Before v0.2.165, if that wait passed its deadline (1 s for a small message, 2 s for a large message or a stream), the node dropped the message, because such a connection has no UDP fallback. Since v0.2.165 the node tries the same connection up to two more times and drops the message only after about 3 s (small message) or 6 s (large message or stream). Nothing reached the other peer on a failed attempt, so a retry cannot deliver a message twice. There is nothing to configure. With telemetry on, `not_opened_retried` and `not_opened_retry_sent` count the retries and the messages they saved. `native_short_queue_full` counts messages refused because the connection's send queue was already full.
 
@@ -1056,7 +1058,7 @@ your config and recent logs.
    automatically** to the previous known-good version (§14.2). If crashes are
    unrelated to an update, capture a report (§10) and ask for help (§12).
 
-### 11.2 Port already in use / exit code 43 / dashboard unreachable
+### 11.2 Port already in use / exit code 43 / dashboard unreachable <span class="badge badge-upd">UPDATED</span>
 
 > **Restarting immediately after a stop is more reliable in v0.2.136.** The
 > check for "is another node already running?" used to be fooled by the socket
@@ -1082,6 +1084,7 @@ your config and recent logs.
   look for is `freenet pre-flight: stopping orphaned node <pid>`. An existing
   unit picks this up on its own: the next update rewrites a unit file that
   differs from the current template.
+- **An out-of-memory kill of a helper process no longer restarts the node (since v0.2.167, Linux).** The systemd service that `freenet service install` sets up caps memory at `MemoryMax=2G`. Before v0.2.167, if the kernel's OOM killer killed any process in the service other than the node itself, systemd stopped and restarted the whole service. That restart counted toward the crash-loop limit (5 starts in 120 seconds) and, right after an update, toward the crash-loop rollback (§13). So one memory spike in a helper process could stop the service or roll back a good update. Since v0.2.167 both the user unit and the `--system` unit set `OOMPolicy=continue` in their `[Service]` section. The kernel still kills the process that ran out of memory, and the journal still records the OOM kill, but systemd leaves the node running. This needs systemd 243 or newer; older systemd logs the line as unknown and ignores it. You don't need to do anything: the next update rewrites a unit that matches the old template. If you edited the unit by hand and the updater's hash record shows the edit, the updater leaves the unit alone. Then add `OOMPolicy=continue` under `[Service]` yourself and run `systemctl daemon-reload` (with `--user` for a user install), or reinstall with `freenet service install`. On older installs that have no hash record, the updater treats the unit as its own and rewrites it, which drops any hand edits. If the node process itself is OOM-killed, the service still restarts as before.
 - Dashboard specifically unreachable while the node runs: confirm the WS API
   port (default 7509) wasn't customized, and that you're browsing from the same
   machine — the API binds to localhost.
@@ -1108,7 +1111,7 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 
 **A bad packet from a peer no longer crashes the connection (since v0.2.148).** Before v0.2.148, two kinds of packet from another peer could make your node panic while reading from that peer. One was a packet too short to be valid. The other was a packet that came from a real connected peer but that your node could not read, for example one using a message format from a newer Freenet release. Your log showed a panic message and your node lost its connection to that peer. While newer and older versions were mixed on the network, this could keep happening. The rest of the node kept running. Since v0.2.148 there is no panic. A packet that is too short is treated like any other packet that fails decryption: it is dropped quietly, but many of these in a short time can still close the connection. An unreadable packet from a connected peer is dropped, the connection stays open, and the node writes one warning per connection: `Dropping authenticated packet that does not decode; later ones on this connection log at debug`. The warning names the peer's address and version. It is harmless and there is nothing to configure. If you see it for many different peers, your node may be out of date: see §11.3.
 
-### 11.4 No peers / can't join the network
+### 11.4 No peers / can't join the network <span class="badge badge-upd">UPDATED</span>
 
 0. **Check your version first** (v0.2.133): the transport handshake enforces a
    minimum compatible version, so a node that is too far out of date is
@@ -1129,6 +1132,8 @@ hand-run with `freenet network`) do not auto-update at all — see §14.3. And
 6. **Joining retries are no longer refused because of their own earlier attempt (fixed in v0.2.164).** Each node decides whether to accept a new connection by comparing the candidate's score against the scores it saw recently. Before v0.2.164 that list kept the score from a joiner's first, refused attempt. A retry carried the same score, so it could never beat its own old entry. The node then refused that joiner on every retry (about every 25-30 seconds) for as long as it kept trying, even when no other node was competing. A new node could sit with very few peers for a long time. From v0.2.164 a node keeps one score per joining address. A retry replaces the joiner's old score and is compared only with other joiners. The fix works on the node that accepts or refuses connections, so it helps more as the network's peers and gateways run v0.2.164 or later. Keep your own node current with `freenet update`. There is nothing to configure.
 7. **"RING_TRANSPORT_DESYNC" while joining (fixed in v0.2.164).** Before v0.2.164, a node that was still joining the network logged an error like "RING_TRANSPORT_DESYNC: transport has connections but ring topology is empty - connections are not being promoted or are being immediately pruned" at about every stats interval. This happened even when nothing was wrong. While your node joins, it keeps a connection to its gateway, and sometimes short-lived joining connections, that are not yet part of its ring, and those were wrongly counted. Since v0.2.164, connections to your configured gateways and transient joining connections are not counted, so the error no longer appears just because your node is joining. If you still see it on v0.2.164 or later, your node has no ring peers at all but holds some other connection that never made it into its ring. That is a real problem: work through this section and report it with your logs.
 8. Still stuck → diagnostic report + ask in Matrix (§12).
+
+**A peer on the same LAN as a gateway (since v0.2.167).** If your node sits behind the same router as a gateway, that gateway sees your LAN address (such as `192.168.1.20`), while every other gateway sees your public address. Before v0.2.167, the node took whichever address it heard last, so its own address could keep changing. If its ring location had been set from an observed address, the location changed with it. Now, once the node knows a public address, it ignores private or loopback ones and logs (at INFO) `connect driver: ignoring private ObservedAddress, a public own_addr is known`. That message is normal and needs no action. Accepted observations log `connect driver: updated own_addr from ObservedAddress`. Networks that are entirely on a LAN or loopback still use those addresses. A location you set in the config is never changed by observed addresses. Carrier-grade NAT addresses (100.64.0.0/10) count as public, so they are not filtered this way. If you move a node from a public network to one that is only a LAN, restart it so it can pick up the LAN address.
 
 ### 11.5 "No file descriptors available" or resource errors
 
@@ -1162,7 +1167,7 @@ lists two things your node measures but does **not** count:
 Either reads "not measured" until the node has first looked at it. Neither is
 charged against the disk budget yet, so a budget alone does not bound them.
 
-### 11.7 An app loads, but parts of it are missing
+### 11.7 An app loads, but parts of it are missing <span class="badge badge-upd">UPDATED</span>
 
 Since v0.2.137 an app asset your node cannot serve comes back as a plain **404**
 instead of a 500 carrying an operating-system error message in the page. That is
@@ -1196,6 +1201,8 @@ If no warning appears at all, treat it as case 1 and give the contract time to
 arrive.
 
 **Apps refused for size (since v0.2.161; limits raised and reasons shown since v0.2.162).** Your node puts size limits on the web apps it unpacks. Since v0.2.162 it refuses an app whose archive is over 100 MiB compressed, unpacks to more than 256 MiB, contains a single file over 128 MiB, or holds more than 4096 files and folders. The 100 MiB and 4096 limits are unchanged. v0.2.161 used 48 MiB unpacked and 32 MiB per file, which refused some real media-heavy sites; if such a site would not load on v0.2.161, update. The node also refuses symbolic links, hard links, devices and other special entries, and any path that points outside the website. Only ordinary files and folders are allowed. When an app is refused, the node removes anything it had already unpacked. Separately, a JavaScript or HTML page larger than 16 MiB is not served: that request gets an error instead. These limits protect your disk and memory from a malicious app built to expand enormously. They cannot be changed. Since v0.2.162 the node keeps up to 512 MiB of unpacked apps on disk and unpacks at most 4 apps at a time. Another app opened while 4 are unpacking waits its turn instead of failing. Since v0.2.162 a refused app also tells you why. The browser shows an error that starts "failed unpacking contract: <key>:" followed by the reason. The node log shows the same reason after "web archive not unpacked:". Typical reasons are "the website unpacks to at least …, over this node's … limit for one website", "the website's file … is …, over this node's … limit for one file", "the website has more than 4096 files and folders" and "a website may hold only regular files and folders". Sizes are given in MiB, or in bytes when the size and the limit would round to the same MiB figure. A file found too large while a page is being served is still reported in bytes ("web archive entry … is … bytes, over the … byte limit"). A page over 16 MiB that is not served still logs bytes ("is larger than the … byte limit for rewritten pages"). Before v0.2.162 the browser showed only "failed unpacking contract: <key>". If the error has no reason after the key, the problem is on your machine (for example a full disk), not in the app; check the node log. If it does give a reason, waiting or reloading will not fix it. The app's publisher has to make the site smaller, usually by hosting large video, audio or images elsewhere and linking to them. For publishers: since v0.2.162 `fdev` warns when a website is over 10 MiB after compression and lists its three largest files. Its error for a site over the 50 MiB limit lists them too.
+
+**Seeing which peers a failed fetch asked (since v0.2.167).** When an app on your machine asks for a contract and your node gives up and answers "not found", the node now writes one INFO line: "GET client: NotFound, first hops tried". The line lists each attempt, up to 8, in the form `address@location(d=distance):outcome`. `distance` is how far that peer is from the contract on the ring. `outcome` is `not_found` if the peer answered that it did not have the contract, or `no_reply` if the peer timed out, the connection dropped or the send failed. `?` marks a value the node does not know. Attempts past the first 8 are shown as `, +N more`, and `hops_tried` gives the total. The line also shows the contract (`instance_id`) and its location (`key_loc`), your node's location (`own_loc`), the reason the search stopped (`cause`), and `suppressed_since_last`, the number of these lines skipped since the last one written. To keep the log small, the node writes at most 5 of these lines in a row, then at most one every 20 seconds. Fetches your node makes for its own internal work are not logged. Before v0.2.167 this list of peers was only logged at debug level. You will see these lines at the default `info` log level, and there is nothing to configure. They include other peers' IP addresses, so keep that in mind before you share your log. If every attempt shows `no_reply`, your node is probably having trouble reaching the network, so run the health check (§7). If they show `not_found`, the contract has probably not reached the network yet, or nobody is hosting it.
 
 ### 11.8 An app still shows its old version after an update
 
@@ -1231,6 +1238,8 @@ A single minute with targets but no sends is not a fault: the node can hold a se
 
 **GET replies for the wrong contract are not hosted (since v0.2.165).** When your node fetches a contract from a peer, it now hosts the reply only if the reply names the contract it asked for. It treats the reply as evidence that the peer holds the contract only if your node accepted the state. Before v0.2.165, a reply whose state your node had rejected, or a reply for a different contract, could still count as proof that the peer held the contract. A reply for the wrong contract could also end up in your node's hosting storage. Now a mismatched reply is dropped, and the node logs a WARN line: "get: reply does not match the requested contract; not hosting it (logged at doubling counts)". To keep the log small, the line appears only on the 1st, 2nd, 4th, 8th, ... occurrence. Each line has a `seen` field, which is the total count since the node started, across all peers. An occasional line is harmless. If the count climbs quickly, some peer is sending bad replies, but the line does not say which one. There is nothing to configure.
 
+**A node holding a contract now serves it even when the request has no hops left (since v0.2.167).** Each GET request carries a hop limit. Before v0.2.167, a request that reached a node with no hops left was answered "not found", even if that node held the contract. Apps could then sometimes fail to load a contract that was on the network. Since v0.2.167 such a node sends its copy. That can be a copy it keeps for itself, or a copy it holds only because it still receives updates for it. A request with no hops left is still not passed on to another peer. Your log may show the INFO line "GET relay: HTL exhausted — serving local fallback"; this is normal. The WARN "GET relay: HTL exhausted — sending NotFound upstream" now means your node really had no copy. There is nothing to configure.
+
 ## 12. Getting Help
 
 1. **Generate a diagnostic report first** (§10) — it answers 90% of the
@@ -1247,7 +1256,7 @@ A single minute with targets but no sends is not a fault: the node can hold a se
 
 # Part VI — Upgrading
 
-## 13. How Auto-Update Works <span class="badge badge-upd">UPDATED</span>
+## 13. How Auto-Update Works
 
 > **Staying current is no longer optional** (v0.2.133). Freenet ships releases
 > frequently — sometimes several a day — and peers are expected to converge on
@@ -1440,7 +1449,7 @@ same page.
 
 # Part VII — Advancing: Power Use
 
-## 16. Secrets: Protecting Your Keys and Private Data
+## 16. Secrets: Protecting Your Keys and Private Data <span class="badge badge-upd">UPDATED</span>
 
 Delegates keep your private data (identity keys, chat-room keys, credentials)
 **encrypted at rest** on your node. The design in one paragraph: every secret is
@@ -1488,6 +1497,8 @@ somewhere that doesn't share fate with the machine. Everything else — hosted
 contract state, caches, the binary — is replaceable; the secrets are not.
 
 **A disk error is no longer mistaken for "no secret" (since v0.2.164).** Before this version, if your node could not read a delegate's secret, or its list of stored keys, from disk (an I/O error, a permissions problem, or too many open files), the delegate was told the secret did not exist or that it had no secrets. An app could then act as if you had no keys: it might show an empty identity, or create a new key and save it over the one it could not read. Since v0.2.164 the node stops that request instead. The app gets an error saying "delegate secret storage read failed (not a missing secret) ... retry it", and the delegate cannot write or delete secrets for the rest of that request. Your log shows an ERROR line such as `secret read I/O failure (not an absent secret); poisoning this delegate call` or `secret enumeration I/O failure (not an empty set); poisoning this delegate call`. If you see it, check the disk, the permissions on the `secrets/` directory and the open-file limit, then retry in the app. Your stored secrets are not changed. A secret that really is missing is still reported as not found.
+
+**A secret that is on disk but can't be decrypted is now logged (since v0.2.167).** If a stored secret exists but fails to decrypt or authenticate, the delegate is still told the secret does not exist. This usually means the key-encryption key (KEK) now in use is not the one the secret was encrypted with, or that the file is corrupt. Before v0.2.167 nothing appeared in your log when this happened. Now your log shows a WARN line: `secret read failure: blob present but failed to authenticate; the delegate sees it as absent (possible key-encryption-key mismatch or corruption)`. A disk I/O error on a present secret still stops the delegate request with the ERROR described above, and now also logs `secret read failure: blob present but read failed with an I/O error`. These lines name the delegate and the on-disk name of the affected file, which is a hash for a secret. They never show the secret's name or contents. Each delegate/file pair is logged at most once every 10 minutes, and `suppressed_since_last_log` tells you how many failures were not logged in between. If you see the authentication message, run `freenet secrets status` and check that the KEK fingerprint is the one you expect, especially after changing machines, restoring a backup or switching KEK backend. Fix the KEK before letting an app create new keys, because the old ones are still on disk. The node also adds counts of these failures to its telemetry, as totals only. A secret that really is missing is not logged.
 
 Full operator documentation: `docs/secrets-at-rest.md` in the source repository.
 
@@ -1921,6 +1932,7 @@ the *current* revision are additionally badged inline throughout the text.
 
 | Manual rev | Date | Freenet version | What changed |
 |---|---|---|---|
+| **1.28** | 2026-11-27 | 0.2.167 | All QUIC-capable peer pairs and gateway joins now start on QUIC, and prefer gateways accept direct QUIC joins from unknown nodes; GETs served at HTL 0; helper OOM kills no longer restart the node; a public address is kept behind a LAN gateway; slow host calls no longer count against the WASM budget; failed secret reads and repeated GET NotFound are logged. |
 | **1.27** | 2026-11-25 | 0.2.165–0.2.166 | A node that cannot join checks for an update without waiting for its next scheduled check; the dashboard no longer says "update required" when an older peer refuses you, and ignores malformed gateway versions; Docker `latest` never moves backwards; unrequested GET replies are no longer hosted; direct-QUIC sends retry instead of dropping. |
 | **1.26** | 2026-11-24 | 0.2.164 | About a quarter of v0.2.164 peer pairs now connect directly over QUIC; a QUIC library panic no longer kills the node; background delegate runs may message other delegates; failed secret reads no longer look like missing secrets; GET responses use bounded memory; your own changes are checked and repaired at co-hosts; two join fixes. |
 | **1.25** | 2026-11-23 | 0.2.163 | Hosted nodes: per-user burst raised from 100 to 500 operations and refusals now name the refused request; five legacy UDP tuning settings now log a startup warning that a future release will ignore them. |
@@ -1950,8 +1962,22 @@ the *current* revision are additionally badged inline throughout the text.
 | **1.1** | 2026-09-05 | 0.2.133 | First living revision: Docker install, macOS app, version-floor warning, bounded logs, memory-aware budgets, dashboard growth, `fdev verify-merge`, backup guidance. Full delta ledger below. |
 | **1.0** | 2026-08-25 | 0.2.123 | Initial full manual: concepts, install, operations, ten-step self-check, troubleshooting, auto-update & rollback, secrets, tuning, developer intro, appendices. |
 
-**Revision 1.27 delta ledger** (every badge in *this* edition traces to a row
+**Revision 1.28 delta ledger** (every badge in *this* edition traces to a row
 here; "driver" names the upstream release or marks the change as editorial):
+
+| Section | Badge | Change | Driver |
+|---|---|---|---|
+| §3 Dashboard / first run | UPDATED | First join uses QUIC when the gateway supports it, otherwise UDP | v0.2.167 |
+| §4.1 Background permission (contract/delegate limits) | UPDATED | Blocking host-call time no longer counts against the guest budget; worst case about 12.5 s per execution | v0.2.167 |
+| §6.2 Options | UPDATED | QUIC-native connects for all eligible pairs; gateway joins native when marked (10 min cooldown after a failure); prefer gateways admit unknown QUIC joiners; opt out with shadow/off | v0.2.167 |
+| §11.2 Port in use / service | UPDATED | An OOM-killed helper process no longer restarts the node (`OOMPolicy=continue`); hand-edited units need the change | v0.2.167 |
+| §11.4 No peers | UPDATED | A public address is kept when a gateway on the same LAN reports a private one | v0.2.167 |
+| §11.7 App parts missing | UPDATED | First hops of a GET that ends NotFound are logged at INFO, including peer IP addresses (rate-limited) | v0.2.167 |
+| §11.9 Changes don't reach others | UPDATED | A relay holding the contract serves it at HTL 0 instead of "not found" | v0.2.167 |
+| §16 Secrets | UPDATED | Secret reads that fail on a present blob are counted and logged at WARN | v0.2.167 |
+
+**Revision 1.27 delta ledger** (historical — these badges are no longer shown
+inline; kept so each edition's changes stay on the record):
 
 | Section | Badge | Change | Driver |
 |---|---|---|---|
@@ -2234,29 +2260,30 @@ inline; kept so each edition's changes stay on the record):
 <div class="growth-row"><span class="growth-label">rev 1.2</span><span class="growth-bar" style="width:42%">19 sections (+4 subsections) + 5 appendices · 7 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.3</span><span class="growth-bar" style="width:44%">19 sections + 5 appendices · 8 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.4</span><span class="growth-bar" style="width:46%">19 sections (+1 subsection) + 5 appendices · 7 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:49%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:51%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.5</span><span class="growth-bar" style="width:48%">19 sections (+2 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.6</span><span class="growth-bar" style="width:50%">19 sections (+3 subsections) + 5 appendices · 3 updated, 1 new</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.7</span><span class="growth-bar" style="width:53%">19 sections (+3 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:56%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:58%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.8</span><span class="growth-bar" style="width:55%">19 sections (+4 subsections) + 5 appendices · 3 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.9</span><span class="growth-bar" style="width:57%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
 <div class="growth-row"><span class="growth-label">rev 1.10</span><span class="growth-bar" style="width:60%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:63%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:65%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:67%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:70%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:72%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:74%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:77%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:79%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:81%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:84%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:86%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:88%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:91%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.24</span><span class="growth-bar" style="width:93%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.25</span><span class="growth-bar" style="width:95%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.26</span><span class="growth-bar" style="width:98%">19 sections (+6 subsections) + 5 appendices · 5 updated</span></div>
-<div class="growth-row"><span class="growth-label">rev 1.27</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.11</span><span class="growth-bar" style="width:62%">19 sections (+4 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.12</span><span class="growth-bar" style="width:64%">19 sections (+4 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.13</span><span class="growth-bar" style="width:66%">19 sections (+4 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.14</span><span class="growth-bar" style="width:68%">19 sections (+5 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.15</span><span class="growth-bar" style="width:71%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.16</span><span class="growth-bar" style="width:73%">19 sections (+5 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.17</span><span class="growth-bar" style="width:75%">19 sections (+5 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.18</span><span class="growth-bar" style="width:78%">19 sections (+5 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.19</span><span class="growth-bar" style="width:80%">19 sections (+5 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.20</span><span class="growth-bar" style="width:82%">19 sections (+6 subsections) + 5 appendices · 4 updated, 1 new</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.21</span><span class="growth-bar" style="width:84%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.22</span><span class="growth-bar" style="width:86%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.23</span><span class="growth-bar" style="width:89%">19 sections (+6 subsections) + 5 appendices · 4 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.24</span><span class="growth-bar" style="width:91%">19 sections (+6 subsections) + 5 appendices · 3 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.25</span><span class="growth-bar" style="width:93%">19 sections (+6 subsections) + 5 appendices · 2 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.26</span><span class="growth-bar" style="width:96%">19 sections (+6 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.27</span><span class="growth-bar" style="width:98%">19 sections (+6 subsections) + 5 appendices · 5 updated</span></div>
+<div class="growth-row"><span class="growth-label">rev 1.28</span><span class="growth-bar" style="width:100%">19 sections (+6 subsections) + 5 appendices · 8 updated</span></div>
 </div>
 
 *Reading the chart:* each future revision adds a row; the bar length is
@@ -2266,7 +2293,7 @@ listed in their rows to see exactly what to re-read.
 
 ---
 
-<p class="footer-note">Freenet User Manual rev 1.27 · covers Freenet v0.2.166 ·
+<p class="footer-note">Freenet User Manual rev 1.28 · covers Freenet v0.2.167 ·
 maintained in <code>docs/user-manual/</code> of
 <a href="https://github.com/freenet/freenet-core">freenet-core</a> ·
 online manual: <a href="https://freenet.org/resources/manual/">freenet.org/resources/manual</a></p>
